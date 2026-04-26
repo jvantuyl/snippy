@@ -22,6 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Detect ImageOS (self-hosted runner)
+        run: |
+          . /etc/os-release
+          case "${ID}-${VERSION_ID}" in
+            ubuntu-22.04) IMAGE_OS=ubuntu22 ;;
+            ubuntu-24.04) IMAGE_OS=ubuntu24 ;;
+            *)            IMAGE_OS=ubuntu24 ;;
+          esac
+          echo "ImageOS=${IMAGE_OS}" >> "${GITHUB_ENV}"
+
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
         with:
@@ -76,6 +86,16 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Detect ImageOS (self-hosted runner)
+        run: |
+          . /etc/os-release
+          case "${ID}-${VERSION_ID}" in
+            ubuntu-22.04) IMAGE_OS=ubuntu22 ;;
+            ubuntu-24.04) IMAGE_OS=ubuntu24 ;;
+            *)            IMAGE_OS=ubuntu24 ;;
+          esac
+          echo "ImageOS=${IMAGE_OS}" >> "${GITHUB_ENV}"
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
