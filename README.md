@@ -84,6 +84,17 @@ ThousandIsland.start_link(
 {:ok, listen_socket} = :ssl.listen(4443, Snippy.ssl_opts(disc))
 ```
 
+For Phoenix endpoints, use `endpoint_https/2` directly in your runtime
+config:
+
+```elixir
+# config/runtime.exs
+{:ok, disc} = Snippy.discover_certificates(prefix: "MYAPP")
+
+config :my_app, MyAppWeb.Endpoint,
+  https: Snippy.endpoint_https(disc, port: 4443, cipher_suite: :strong)
+```
+
 The opts already include both `:certs_keys` (for clients that don't send SNI)
 and `:sni_fun` (for clients that do). Multiple certs whose hostnames overlap
 are returned together so OTP can pick the one that matches the client's
@@ -146,6 +157,7 @@ cowboy_opts = Snippy.cowboy_opts(disc, opts)
 ranch_opts  = Snippy.ranch_opts(disc, opts)
 bandit_opts = Snippy.bandit_opts(disc, opts)
 ti_opts     = Snippy.thousand_island_opts(disc, opts)
+phx_opts    = Snippy.endpoint_https(disc, opts)
 ```
 
 ### `discover_certificates/1` Options

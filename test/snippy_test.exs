@@ -268,4 +268,44 @@ defmodule SnippyTest do
       assert log =~ "misspelling"
     end
   end
+
+  describe "endpoint_https/2" do
+    test "merges Phoenix transport opts with Snippy SSL opts", %{fx: fx} do
+      env = %{
+        "APP_MAIN_CRT" => fx.pem.a_cert,
+        "APP_MAIN_KEY" => fx.pem.a_key
+      }
+
+      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+
+      opts =
+        Snippy.endpoint_https(disc,
+          port: 4443,
+          cipher_suite: :strong,
+          otp_app: :my_app
+        )
+
+      assert opts[:port] == 4443
+      assert opts[:cipher_suite] == :strong
+      assert opts[:otp_app] == :my_app
+      assert is_function(opts[:sni_fun], 1)
+      assert is_list(opts[:certs_keys])
+    end
+
+    test "passes :only/:keys through to scope filtering, not into the result", %{fx: fx} do
+      env = %{
+        "APP_MAIN_CRT" => fx.pem.a_cert,
+        "APP_MAIN_KEY" => fx.pem.a_key
+      }
+
+      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+
+      opts = Snippy.endpoint_https(disc, port: 4443, only: ["a.example.com"])
+
+      refute Keyword.has_key?(opts, :only)
+      refute Keyword.has_key?(opts, :keys)
+      assert opts[:port] == 4443
+      assert is_function(opts[:sni_fun], 1)
+    end
+  end
 end

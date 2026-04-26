@@ -82,4 +82,27 @@ defmodule Snippy do
   def thousand_island_opts(%Discovery{} = disc, opts \\ []) do
     [transport_options: ssl_opts(disc, opts)]
   end
+
+  @doc """
+  Build the keyword list to assign to the `:https` key of a Phoenix
+  endpoint config.
+
+  Accepts both Phoenix transport opts (e.g. `:port`, `:cipher_suite`,
+  `:otp_app`) and Snippy scoping opts (`:only`, `:keys`). Snippy's SSL
+  options (`:sni_fun`, `:certs_keys`) are merged in last so they win on
+  collision; everything else is passed through unchanged.
+
+  ## Example
+
+      # config/runtime.exs
+      {:ok, disc} = Snippy.discover_certificates(prefix: "MYAPP")
+
+      config :my_app, MyAppWeb.Endpoint,
+        https: Snippy.endpoint_https(disc, port: 4443, cipher_suite: :strong)
+  """
+  @spec endpoint_https(discovery(), keyword()) :: keyword()
+  def endpoint_https(%Discovery{} = disc, opts \\ []) do
+    {scope_opts, transport_opts} = Keyword.split(opts, [:only, :keys])
+    Keyword.merge(transport_opts, ssl_opts(disc, scope_opts))
+  end
 end
