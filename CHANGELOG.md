@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.8.2
+
+First release published to Hex.
+
+### Breaking changes
+
+- **OCSP stapling support removed.** The `:ocsp_stapling?` group flag,
+  the `_OCSP_STAPLING` (and `_OSCP_STAPLING` typo-alias) suffixes, and
+  the related extraction/parsing helpers are gone. OTP's `:ssl` does
+  not perform server-side OCSP stapling, so the previous configuration
+  knobs were inert. Strip any `_OCSP_STAPLING` env vars and any
+  references to `:ocsp_stapling?` from your code.
+
+### New env-var aliases
+
+- `_CERT` and `_CERT_FILE` are now recognized alongside `_CRT` /
+  `_CRT_FILE`. `_CACERT` / `_CACERT_FILE` are recognized alongside
+  `_CACRT` / `_CACRT_FILE`. The two spellings are interchangeable for a
+  given group.
+
+### Fixes & internals
+
+- Added an `:errors` field on `%Snippy.Discovery{}` listing per-group
+  materialization failures as `{prefix, key, reason}` tuples (carried
+  over from the 0.6.0 series and now stable).
+- Hardened the shared `Snippy.Store`: scan crashes and timeouts surface
+  as structured errors rather than killing the GenServer; scheduled
+  reload failures are logged but do not stop the timer.
+- Improved `mix snippy.test` reporting and added a `--quiet` flag.
+- Test suite cleanup: 208 tests + 9 properties, 99.6% line coverage,
+  `mix credo --strict` clean, and a new `mix lint` alias chained into
+  `mix ci`.
+
 ## 0.6.0 (breaking)
 
 ### Breaking changes

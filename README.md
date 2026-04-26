@@ -31,7 +31,7 @@ installed by adding `snippy` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:snippy, "~> 0.6.0"},
+    {:snippy, "~> 0.8.2"},
     # Optional: enables public-CA chain validation against the
     # Mozilla CA bundle shipped with castore.
     {:castore, "~> 1.0"}
