@@ -9,7 +9,15 @@
 # printed on stdout. Snippy.TestFixtures invokes this script automatically on
 # every test run; you should rarely need to run it by hand.
 #
-# Requirements: openssl >= 3.0 (uses -copy_extensions and -not_before/-not_after)
+# Requirements:
+#   - openssl 3.0+
+#   - one of:
+#       * faketime (libfaketime), preferred and recommended; or
+#       * openssl 3.2+ (which provides x509 -not_before/-not_after)
+#     ...for minting the date-shifted "expired" and "future" leaves.
+#
+#   On macOS:    brew install libfaketime
+#   On Ubuntu:   sudo apt-get install -y faketime
 #
 # Files produced (in TARGET_DIR):
 #   ca.pem            self-signed root CA cert
@@ -40,7 +48,7 @@ PASS="secret"
   -days 3650 \
   -subj "/CN=Snippy Test CA" \
   -addext "basicConstraints=critical,CA:TRUE" \
-  >/dev/null 2>&1
+  >/dev/null
 
 # Helper: issue an RSA leaf cert signed by the CA.
 #   $1 logical name (subject CN + dNSName SAN; also stem of output filenames)
@@ -52,30 +60,61 @@ issue_rsa_leaf() {
     -keyout "${stem}.key" -out "${stem}.csr" \
     -subj "/CN=${cn}" \
     -addext "subjectAltName=DNS:${cn}" \
-    >/dev/null 2>&1
+    >/dev/null
   "$OPENSSL" x509 -req -in "${stem}.csr" \
     -CA ca.pem -CAkey ca.key -CAcreateserial \
     -out "${stem}.pem" -days 365 \
     -copy_extensions copy \
-    >/dev/null 2>&1
+    >/dev/null
   rm -f "${stem}.csr"
 }
 
-# Same as above but with explicit notBefore/notAfter (RFC 5280 generalTime).
-# $1 cn, $2 stem, $3 not_before (YYYYMMDDhhmmssZ), $4 not_after
+# Mint a leaf with a custom not-before / not-after.
+#
+# $1 cn      Subject CN + dNSName SAN
+# $2 stem    output filename stem
+# $3 nb_offset_seconds  notBefore relative to now (negative = past)
+# $4 na_offset_seconds  notAfter  relative to now (negative = past)
+#
+# Prefers faketime (rewinds the wall clock and uses -days N) for portability
+# across openssl versions; falls back to openssl 3.2+ -not_before/-not_after.
 issue_rsa_leaf_dated() {
-  local cn="$1" stem="$2" nb="$3" na="$4"
+  local cn="$1" stem="$2" nb_off="$3" na_off="$4"
+
   "$OPENSSL" req -new -newkey rsa:2048 -nodes \
     -keyout "${stem}.key" -out "${stem}.csr" \
     -subj "/CN=${cn}" \
     -addext "subjectAltName=DNS:${cn}" \
-    >/dev/null 2>&1
-  "$OPENSSL" x509 -req -in "${stem}.csr" \
-    -CA ca.pem -CAkey ca.key -CAcreateserial \
-    -out "${stem}.pem" \
-    -not_before "$nb" -not_after "$na" \
-    -copy_extensions copy \
-    >/dev/null 2>&1
+    >/dev/null
+
+  local days=$(( (na_off - nb_off + 86399) / 86400 ))
+  if (( days < 1 )); then days=1; fi
+
+  if command -v faketime >/dev/null 2>&1; then
+    local now_epoch nb_epoch
+    now_epoch="$(date -u +%s)"
+    nb_epoch=$(( now_epoch + nb_off ))
+    faketime "@${nb_epoch}" "$OPENSSL" x509 -req -in "${stem}.csr" \
+      -CA ca.pem -CAkey ca.key -CAcreateserial \
+      -out "${stem}.pem" -days "${days}" \
+      -copy_extensions copy \
+      >/dev/null
+  elif "$OPENSSL" x509 -help 2>&1 | grep -q -- '-not_before'; then
+    local nb na
+    nb="$(gen_date "$nb_off")"
+    na="$(gen_date "$na_off")"
+    "$OPENSSL" x509 -req -in "${stem}.csr" \
+      -CA ca.pem -CAkey ca.key -CAcreateserial \
+      -out "${stem}.pem" \
+      -not_before "$nb" -not_after "$na" \
+      -copy_extensions copy \
+      >/dev/null
+  else
+    echo "ERROR: need 'faketime' or openssl 3.2+ to mint dated certs" >&2
+    "$OPENSSL" version >&2
+    exit 1
+  fi
+
   rm -f "${stem}.csr"
 }
 
@@ -90,12 +129,12 @@ issue_rsa_leaf "b.example.com" "b"
 "$OPENSSL" req -new -key ec.key -out ec.csr \
   -subj "/CN=ec.example.com" \
   -addext "subjectAltName=DNS:ec.example.com" \
-  >/dev/null 2>&1
+  >/dev/null
 "$OPENSSL" x509 -req -in ec.csr \
   -CA ca.pem -CAkey ca.key -CAcreateserial \
   -out ec.pem -days 365 \
   -copy_extensions copy \
-  >/dev/null 2>&1
+  >/dev/null
 rm -f ec.csr
 
 # ---- 4. Wildcard SAN --------------------------------------------------------
@@ -104,17 +143,17 @@ rm -f ec.csr
   -keyout wild.key -out wild.csr \
   -subj "/CN=wild.example.com" \
   -addext "subjectAltName=DNS:*.wild.example.com" \
-  >/dev/null 2>&1
+  >/dev/null
 "$OPENSSL" x509 -req -in wild.csr \
   -CA ca.pem -CAkey ca.key -CAcreateserial \
   -out wild.pem -days 365 \
   -copy_extensions copy \
-  >/dev/null 2>&1
+  >/dev/null
 rm -f wild.csr
 
 # ---- 5. Expired and future leaves -------------------------------------------
 
-# Date math is portable enough between BSD and GNU date; we precompute.
+# Portable date-from-offset for the openssl 3.2+ fallback path.
 gen_date() {
   # $1 = offset in seconds from now (may be negative)
   if date -u -d "now" +%s >/dev/null 2>&1; then
@@ -126,18 +165,16 @@ gen_date() {
   fi
 }
 
-NB_EXPIRED="$(gen_date $((-2 * 365 * 86400)))"      # 2 years ago
-NA_EXPIRED="$(gen_date -86400)"                      # 1 day ago
-NB_FUTURE="$(gen_date  $((365 * 86400)))"            # 1 year from now
-NA_FUTURE="$(gen_date  $((2 * 365 * 86400)))"        # 2 years from now
+issue_rsa_leaf_dated "expired.example.com" "expired" \
+  "$((-2 * 365 * 86400))" "-86400"
 
-issue_rsa_leaf_dated "expired.example.com" "expired" "$NB_EXPIRED" "$NA_EXPIRED"
-issue_rsa_leaf_dated "future.example.com"  "future"  "$NB_FUTURE"  "$NA_FUTURE"
+issue_rsa_leaf_dated "future.example.com" "future" \
+  "$((365 * 86400))" "$((2 * 365 * 86400))"
 
 # ---- 6. Encrypted variant of b's key ----------------------------------------
 
 "$OPENSSL" pkcs8 -topk8 -in b.key -passout "pass:${PASS}" -out b.enc.key \
-  >/dev/null 2>&1
+  >/dev/null
 
 # ---- 7. Password files ------------------------------------------------------
 
