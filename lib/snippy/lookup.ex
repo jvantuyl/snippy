@@ -104,8 +104,6 @@ defmodule Snippy.Lookup do
     Enum.filter(groups, fn g -> in_scope?(g, scope) end)
   end
 
-  defp in_scope?(_group, %{only: nil, keys: nil}), do: true
-
   defp in_scope?(%Group{} = group, scope) do
     key_match?(group.key, scope.keys) or host_match?(group, scope.only)
   end

@@ -447,6 +447,27 @@ defmodule SnippyTest do
       {:ok, disc2} = Snippy.reload(disc1)
       assert is_list(disc2.groups)
     end
+
+    test "propagates Store.reload errors through Snippy.reload/1", %{fx: fx} do
+      env = %{
+        "RELOADERR_M_CRT" => fx.pem.a_cert,
+        "RELOADERR_M_KEY" => fx.pem.a_key
+      }
+
+      {:ok, disc1} = Snippy.discover_certificates(prefix: "RELOADERR", env: env)
+
+      Application.put_env(:snippy, :scan_fn, fn _ -> raise "boom" end)
+      Snippy.Store.__test_reset__()
+
+      try do
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, _} = Snippy.reload(disc1)
+        end)
+      after
+        Application.delete_env(:snippy, :scan_fn)
+        Snippy.Store.__test_reset__()
+      end
+    end
   end
 
   describe "phx_endpoint_config/1 input shapes" do

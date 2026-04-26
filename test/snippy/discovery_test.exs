@@ -333,4 +333,19 @@ defmodule Snippy.DiscoveryTest do
       assert Discovery.format_error(:also_unknown) == ":also_unknown"
     end
   end
+
+  describe "_CACRT_FILE path" do
+    test "loads CA chain from a file via _CACRT_FILE", %{fx: fx} do
+      env = %{
+        "APP_X_CRT" => fx.pem.a_cert,
+        "APP_X_KEY" => fx.pem.a_key,
+        "APP_X_CACRT_FILE" => fx.paths.ca_cert
+      }
+
+      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+      [g] = disc.groups
+      assert g.has_ca_chain?
+      assert g.chain_validation == :ok_chain
+    end
+  end
 end

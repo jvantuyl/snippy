@@ -391,6 +391,73 @@ defmodule Snippy.StoreTest do
     end
   end
 
+  describe "GenServer materialize fast paths" do
+    test "direct materialize call hits already-cached branch", %{fx: fx} do
+      put_env("STS_M_CRT", fx.pem.a_cert)
+      put_env("STS_M_KEY", fx.pem.a_key)
+
+      # First call goes through fetch_or_materialize, populating ETS.
+      [g] = Store.lookup_groups(["STS"], [])
+      assert g.key == "M"
+
+      # Now call the GenServer directly with a raw whose materialized
+      # entry is already in ETS — exercises the [_] -> {:reply, :ok, state}
+      # branch in handle_call({:materialize, _, _}, ...).
+      raw = %Snippy.Discovery.Group{prefix: "STS", key: "M"}
+      assert :ok = GenServer.call(Snippy.Store, {:materialize, raw, []})
+    end
+
+    test "run_materialize rescue: malformed raw raises and is captured" do
+      # Send a raw with no :cert/:key_var/:password keys; materialize_prepare
+      # falls through to the catch-all clause which calls g.password
+      # and raises KeyError. The Store's run_materialize/2 has a rescue
+      # that converts that into {:error, {:materialize_exception, _}}.
+      malformed = %{prefix: "STT", key: "M"}
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok = GenServer.call(Snippy.Store, {:materialize, malformed, []})
+        end)
+
+      assert log =~ "materialize_group raised"
+
+      [{_, cached}] = :ets.lookup(@table, {:materialized, "STT", "M"})
+      assert {:error, {:materialize_exception, _}} = cached
+    end
+  end
+
+  describe "scheduled reload — empty scan_meta path" do
+    test "scheduled reload triggered without scan_meta uses [] opts", %{fx: fx} do
+      put_env("STU_M_CRT", fx.pem.a_cert)
+      put_env("STU_M_KEY", fx.pem.a_key)
+
+      # Prime the Store with a successful scan and known seq.
+      :ok = Store.ensure_scanned([])
+      [{:scan_meta, %{seq: seq}}] = :ets.lookup(@table, :scan_meta)
+
+      # Wipe scan_meta but keep the seq so scan_opts_from_state hits
+      # the `_ -> []` fallback when {:scheduled_reload, seq} is processed.
+      :ets.delete(@table, :scan_meta)
+
+      send(Process.whereis(Store), {:scheduled_reload, seq})
+
+      # Round-trip a synchronous call to wait for the message to be processed.
+      _ = Store.ensure_scanned([])
+      # If we got here without the GenServer crashing, the path was exercised.
+      assert Process.alive?(Process.whereis(Store))
+    end
+  end
+
+  describe "explicit DOWN message" do
+    test "isolated DOWN message is ignored without crashing" do
+      pid = Process.whereis(Store)
+      send(pid, {:DOWN, make_ref(), :process, self(), :normal})
+      # Synchronous round-trip ensures the message was processed.
+      assert :ok = Store.ensure_scanned([])
+      assert Process.alive?(pid)
+    end
+  end
+
   describe "concurrent scan request" do
     test "second call to ensure_scanned during in-flight scan returns immediately", %{fx: fx} do
       put_env("STP_M_CRT", fx.pem.a_cert)
@@ -438,7 +505,7 @@ defmodule Snippy.StoreTest do
 
   # Test variables we set all start with one of these prefixes; ignore
   # anything else so we don't clobber developer environment.
-  @test_prefixes ~w(STA STB STC STD STE STF STG STH STI STJ STK STL STM STN STO STP STQ STR)
+  @test_prefixes ~w(STA STB STC STD STE STF STG STH STI STJ STK STL STM STN STO STP STQ STR STS STT STU)
 
   defp snippy_test_var?(name) do
     Enum.any?(@test_prefixes, fn pfx -> String.starts_with?(name, pfx <> "_") end)
