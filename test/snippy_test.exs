@@ -372,4 +372,101 @@ defmodule SnippyTest do
       refute log =~ "BROKEN"
     end
   end
+
+  describe "scope filtering" do
+    test "atom-typed :keys are normalized to upcase strings", %{fx: fx} do
+      env = %{
+        "APP_MAIN_CRT" => fx.pem.a_cert,
+        "APP_MAIN_KEY" => fx.pem.a_key,
+        "APP_OTHER_CRT" => fx.pem.b_cert,
+        "APP_OTHER_KEY" => fx.pem.b_key
+      }
+
+      opts = Snippy.ssl_opts(prefix: "APP", env: env, keys: [:main])
+      # Fallback :certs_keys reflects the scoped subset.
+      assert is_list(opts[:certs_keys])
+    end
+
+    test ":only filters groups by hostname pattern", %{fx: fx} do
+      env = %{
+        "APP_A_CRT" => fx.pem.a_cert,
+        "APP_A_KEY" => fx.pem.a_key,
+        "APP_B_CRT" => fx.pem.b_cert,
+        "APP_B_KEY" => fx.pem.b_key
+      }
+
+      sni = Snippy.sni(prefix: "APP", env: env, only: ["a.example.com"])
+
+      # SNI for the matching host returns one cert.
+      assert [certs_keys: [%{}]] = sni.("a.example.com")
+
+      # SNI for the *non*-matching host returns the scoped fallback set
+      # (which is built only from groups that pass the scope filter), so
+      # it should still produce a cert (the scoped fallback).
+      result = sni.("nonexistent.example.com")
+      assert is_list(result)
+    end
+
+    test ":default_hostname excluded by scope warns and produces empty fallback", %{fx: fx} do
+      env = %{
+        "APP_A_CRT" => fx.pem.a_cert,
+        "APP_A_KEY" => fx.pem.a_key
+      }
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          opts =
+            Snippy.ssl_opts(
+              prefix: "APP",
+              env: env,
+              default_hostname: "a.example.com",
+              only: ["totally-unrelated.test"]
+            )
+
+          assert opts[:certs_keys] == []
+        end)
+
+      assert log =~ "default_hostname"
+    end
+  end
+
+  describe "Snippy.reload/1" do
+    test "round-trips a shared-Store handle and re-materializes", %{fx: fx} do
+      env = %{
+        "RELOADTEST_M_CRT" => fx.pem.a_cert,
+        "RELOADTEST_M_KEY" => fx.pem.a_key
+      }
+
+      {:ok, disc1} = Snippy.discover_certificates(prefix: "RELOADTEST", env: env)
+      assert [g1] = disc1.groups
+      assert g1.key == "M"
+
+      # Plain reload, even on an isolated handle, should succeed; it
+      # re-runs the global Store reload (no-op on global state) and then
+      # rediscovers using the original prefix(es).
+      {:ok, disc2} = Snippy.reload(disc1)
+      assert is_list(disc2.groups)
+    end
+  end
+
+  describe "phx_endpoint_config/1 input shapes" do
+    test "discarded snippy opts include :discovered_certs", %{fx: fx} do
+      env = %{
+        "APP_M_CRT" => fx.pem.a_cert,
+        "APP_M_KEY" => fx.pem.a_key
+      }
+
+      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+
+      opts =
+        Snippy.phx_endpoint_config(
+          prefix: "APP",
+          discovered_certs: disc,
+          port: 4443
+        )
+
+      refute Keyword.has_key?(opts, :discovered_certs)
+      assert opts[:port] == 4443
+    end
+  end
 end

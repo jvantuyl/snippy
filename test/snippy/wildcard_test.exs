@@ -34,4 +34,43 @@ defmodule Snippy.WildcardTest do
     assert Wildcard.normalize("API.EXAMPLE.COM.") == "api.example.com"
     assert Wildcard.normalize("*.Example.Com") == "*.example.com"
   end
+
+  test "label_count includes the wildcard label" do
+    assert Wildcard.label_count("api.example.com") == 3
+    assert Wildcard.label_count("*.example.com") == 3
+    assert Wildcard.label_count("*") == 1
+    assert Wildcard.label_count("example.com.") == 2
+  end
+
+  test "labels_with_wild includes the leading * for wildcard patterns" do
+    assert Wildcard.labels_with_wild("api.example.com") == ["api", "example", "com"]
+    assert Wildcard.labels_with_wild("*.example.com") == ["*", "example", "com"]
+    assert Wildcard.labels_with_wild("*") == ["*"]
+  end
+
+  test "match? rejects host-side wildcards" do
+    refute Wildcard.match?("api.example.com", "*.example.com")
+    refute Wildcard.match?("*.example.com", "*.example.com")
+  end
+
+  test "non-ASCII host falls back to lowercase + dot-split" do
+    # The :domainname dependency rejects non-ASCII labels; we should get a
+    # case-folded, dot-split result anyway.
+    result = Wildcard.normalize("München.Example.Com")
+    assert result == "münchen.example.com"
+  end
+
+  test "parse handles charlists" do
+    assert {:exact, ["api", "example", "com"]} == Wildcard.parse(~c"api.example.com")
+    assert {:wild, ["example", "com"]} == Wildcard.parse(~c"*.example.com")
+  end
+
+  test "match? handles empty wildcard" do
+    assert Wildcard.match?("*", "anything")
+    refute Wildcard.match?("*", "deep.host.com")
+  end
+
+  test "wildcard? identifies bare star" do
+    assert Wildcard.wildcard?("*")
+  end
 end

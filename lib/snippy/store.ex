@@ -122,6 +122,16 @@ defmodule Snippy.Store do
   end
 
   @doc """
+  Test-only: clear all ETS state (scan, materialized, host index, meta)
+  and reset the GenServer's seq + reload timer. Used by the test suite to
+  isolate cases that exercise the shared Store path. Safe to call in
+  production but generally not useful there.
+  """
+  def __test_reset__ do
+    GenServer.call(__MODULE__, :__test_reset__)
+  end
+
+  @doc """
   Eager diagnostic discovery: scan + materialize everything matching
   `:prefix`.
 
@@ -297,6 +307,17 @@ defmodule Snippy.Store do
   end
 
   @impl true
+  def handle_call(:__test_reset__, _from, state) do
+    if state.reload_timer, do: Process.cancel_timer(state.reload_timer)
+    :ets.match_delete(@table, {{:scan, :_, :_}, :_})
+    :ets.match_delete(@table, {{:materialized, :_, :_}, :_})
+    :ets.match_delete(@table, {{:exact, :_, :_, :_}, :_})
+    :ets.match_delete(@table, {{:wild, :_, :_, :_}, :_})
+    :ets.delete(@table, :scan_meta)
+    {:reply, :ok, %{state | seq: 0, reload_interval_ms: nil, reload_timer: nil}}
+  end
+
+  @impl true
   def handle_call({:materialize, raw, opts}, _from, state) do
     key = {:materialized, raw.prefix, raw.key}
 
@@ -354,10 +375,11 @@ defmodule Snippy.Store do
 
   defp do_scan(opts) do
     timeout = Application.get_env(:snippy, :scan_timeout_ms, @scan_timeout_ms)
+    scan_fn = Application.get_env(:snippy, :scan_fn, &Discovery.scan_all/1)
 
     task =
       Task.Supervisor.async_nolink(Snippy.TaskSupervisor, fn ->
-        Discovery.scan_all(opts)
+        scan_fn.(opts)
       end)
 
     case Task.yield(task, timeout) || Task.shutdown(task) do
