@@ -110,7 +110,6 @@ defmodule Mix.Tasks.Snippy.Test do
       "  password          : #{if g.has_password?, do: "present (elided)", else: "absent"}"
     )
 
-    Mix.shell().info("  ocsp stapling     : #{g.ocsp_stapling?}")
     Mix.shell().info("  chain validation  : #{g.chain_validation}")
     Mix.shell().info("")
   end

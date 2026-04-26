@@ -11,8 +11,8 @@ ready-to-use configuration for many popular TLS endpoints (i.e.
 
 Snippy turns 12-factor-style env vars (`MYAPP_API_CRT`, `MYAPP_API_KEY`, ...)
 into a fully-validated, hot-reloadable cert store with built-in SNI, multi-cert
-per host (e.g. ECDSA + RSA), optional public-CA chain validation, optional OCSP
-stapling hints, and a `:sni_fun` you can hand straight to your TLS listener.
+per host (e.g. ECDSA + RSA), optional public-CA chain validation, and a
+`:sni_fun` you can hand straight to your TLS listener.
 
 The name was inspired by the TLS [Server Name Indication
 (SNI)](https://en.wikipedia.org/wiki/Server_Name_Indication) extension that is
@@ -161,19 +161,17 @@ Elixir:
 
 | TLS Option | Suffix | Purpose |
 | --- | --- |
-| `:cert` | `CRT` | Inline PEM-encoded certificate (or chain) |
-| `:certfile` | `CRT_FILE` | Path to a PEM-encoded certificate (or chain) |
+| `:cert` | `CRT`, `CERT` | Inline PEM-encoded certificate (or chain) |
+| `:certfile` | `CRT_FILE`, `CERT_FILE` | Path to a PEM-encoded certificate (or chain) |
 | `:key` | `KEY` | Inline PEM-encoded private key (PKCS#1, SEC1, or PKCS#8; encrypted or not) |
 | `:keyfile` | `KEY_FILE` | Path to a PEM-encoded private key |
 | `:password` | `PWD`, `PASS`, `PASSWD`, `PASSWORD` | Inline password for an encrypted key |
 | none | `PWD_FILE`, `PASS_FILE`, `PASSWD_FILE`, `PASSWORD_FILE` | Path to a password file |
-| `:cacerts` | `CACRT` | Inline PEM-encoded CA chain (intermediates, root last) |
-| `:cacertfile` | `CACRT_FILE` | Path to a PEM-encoded CA chain |
-| `{:stapling, _}` | `OCSP_STAPLING` | Boolean flag (`true`/`false`/`on`/`off`/`1`/`0`/...) |
-| none | `OSCP_STAPLING` | Common typo; honored with a warning |
+| `:cacerts` | `CACRT`, `CACERT` | Inline PEM-encoded CA chain (intermediates, root last) |
+| `:cacertfile` | `CACRT_FILE`, `CACERT_FILE` | Path to a PEM-encoded CA chain |
 
-Snippy raises if more than one password alias is set on the same group, so
-you don't end up wondering which one took effect.
+Snippy raises if more than one alias is set for the same option on the same
+group, so you don't end up wondering which one took effect.
 
 ### Multiple Prefixes
 

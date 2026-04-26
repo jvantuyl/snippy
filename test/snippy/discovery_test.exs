@@ -2,7 +2,7 @@ defmodule Snippy.DiscoveryTest do
   @moduledoc """
   Direct exercises of `Snippy.Discovery` internals that the higher-level
   helper tests don't reach: prefix normalization variants, materialization
-  shape errors, password-file failures, and the malformed-OCSP-flag path.
+  shape errors, and password-file failures.
   """
 
   use ExUnit.Case, async: false
@@ -75,9 +75,7 @@ defmodule Snippy.DiscoveryTest do
         cert: nil,
         key_var: nil,
         password: nil,
-        ca: nil,
-        ocsp: false,
-        typo_warned?: false
+        ca: nil
       }
 
       assert {:error, :no_cert_or_key} = Discovery.materialize_group(raw)
@@ -90,9 +88,7 @@ defmodule Snippy.DiscoveryTest do
         cert: nil,
         key_var: %{kind: :inline, var: "X_Y_KEY", val: "irrelevant"},
         password: nil,
-        ca: nil,
-        ocsp: false,
-        typo_warned?: false
+        ca: nil
       }
 
       assert {:error, :key_without_cert} = Discovery.materialize_group(raw)
@@ -105,9 +101,7 @@ defmodule Snippy.DiscoveryTest do
         cert: %{kind: :inline, var: "X_Y_CRT", val: "irrelevant"},
         key_var: nil,
         password: nil,
-        ca: nil,
-        ocsp: false,
-        typo_warned?: false
+        ca: nil
       }
 
       assert {:error, :cert_without_key} = Discovery.materialize_group(raw)
@@ -122,9 +116,7 @@ defmodule Snippy.DiscoveryTest do
         cert: %{kind: :inline, var: "X_Y_CRT", val: fx.pem.b_cert},
         key_var: %{kind: :inline, var: "X_Y_KEY", val: enc_key},
         password: %{kind: :file, var: "X_Y_PWD_FILE", val: "/nonexistent/pwd"},
-        ca: nil,
-        ocsp: false,
-        typo_warned?: false
+        ca: nil
       }
 
       ExUnit.CaptureLog.capture_log(fn ->
@@ -140,9 +132,7 @@ defmodule Snippy.DiscoveryTest do
         cert: nil,
         key_var: nil,
         password: nil,
-        ca: nil,
-        ocsp: false,
-        typo_warned?: false
+        ca: nil
       }
 
       original = Application.get_env(:castore, :no_op, :unset)
@@ -155,55 +145,6 @@ defmodule Snippy.DiscoveryTest do
         assert {:error, :castore_required_for_always_validation} =
                  Discovery.materialize_group(raw, public_ca_validation: :always)
       end
-    end
-  end
-
-  describe "OCSP / parse_bool!" do
-    test "garbage value raises ArgumentError", %{fx: fx} do
-      env = %{
-        "OCSP_X_CRT" => fx.pem.a_cert,
-        "OCSP_X_KEY" => fx.pem.a_key,
-        "OCSP_X_OCSP_STAPLING" => "maybe?"
-      }
-
-      assert_raise ArgumentError, ~r/invalid boolean/, fn ->
-        Snippy.discover_certificates(prefix: "OCSP", env: env)
-      end
-    end
-
-    test "extra accepted forms (enable/disable/blank-trim)", %{fx: fx} do
-      for {val, expected} <- [
-            {"  TRUE  ", true},
-            {"Enable", true},
-            {"DISABLE", false}
-          ] do
-        env = %{
-          "OCSP_X_CRT" => fx.pem.a_cert,
-          "OCSP_X_KEY" => fx.pem.a_key,
-          "OCSP_X_OCSP_STAPLING" => val
-        }
-
-        {:ok, disc} = Snippy.discover_certificates(prefix: "OCSP", env: env)
-        [g] = disc.groups
-        assert g.ocsp_stapling? == expected, "#{inspect(val)} -> #{expected}"
-      end
-    end
-
-    test "lone _OSCP_STAPLING typo without canonical still works (different log line)", %{fx: fx} do
-      env = %{
-        "OCSP_X_CRT" => fx.pem.a_cert,
-        "OCSP_X_KEY" => fx.pem.a_key,
-        "OCSP_X_OSCP_STAPLING" => "true"
-      }
-
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          {:ok, disc} = Snippy.discover_certificates(prefix: "OCSP", env: env)
-          [g] = disc.groups
-          assert g.ocsp_stapling? == true
-        end)
-
-      assert log =~ "honoring it anyway"
     end
   end
 

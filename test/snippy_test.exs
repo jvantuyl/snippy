@@ -211,65 +211,58 @@ defmodule SnippyTest do
         assert [_g] = disc.groups, "suffix #{suffix} did not load encrypted key"
       end
     end
-  end
 
-  describe "OCSP stapling" do
-    test "parses canonical _OCSP_STAPLING values", %{fx: fx} do
-      for {val, expected} <- [
-            {"true", true},
-            {"on", true},
-            {"enabled", true},
-            {"1", true},
-            {"false", false},
-            {"off", false},
-            {"disabled", false},
-            {"0", false}
-          ] do
+    test "CRT and CERT aliases are interchangeable for inline certs", %{fx: fx} do
+      for suffix <- ["CRT", "CERT"] do
         env = %{
-          "APP_X_CRT" => fx.pem.a_cert,
-          "APP_X_KEY" => fx.pem.a_key,
-          "APP_X_OCSP_STAPLING" => val
+          "APP_X_#{suffix}" => fx.pem.a_cert,
+          "APP_X_KEY" => fx.pem.a_key
         }
 
         {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
-        assert [g] = disc.groups
-        assert g.ocsp_stapling? == expected, "#{val} should parse to #{expected}"
+        assert [_g] = disc.groups, "suffix #{suffix} did not produce a group"
       end
     end
 
-    test "honors typo _OSCP_STAPLING with warning", %{fx: fx} do
-      env = %{
-        "APP_X_CRT" => fx.pem.a_cert,
-        "APP_X_KEY" => fx.pem.a_key,
-        "APP_X_OSCP_STAPLING" => "true"
-      }
+    test "CRT_FILE and CERT_FILE aliases are interchangeable for cert files", %{fx: fx} do
+      for suffix <- ["CRT_FILE", "CERT_FILE"] do
+        env = %{
+          "APP_X_#{suffix}" => fx.paths.a_cert,
+          "APP_X_KEY" => fx.pem.a_key
+        }
 
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
-          assert [g] = disc.groups
-          assert g.ocsp_stapling? == true
-        end)
-
-      assert log =~ "misspelling"
+        {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+        assert [g] = disc.groups, "suffix #{suffix} did not produce a group"
+        assert g.cert_source == :file
+      end
     end
 
-    test "prefers canonical over typo when both set", %{fx: fx} do
-      env = %{
-        "APP_X_CRT" => fx.pem.a_cert,
-        "APP_X_KEY" => fx.pem.a_key,
-        "APP_X_OCSP_STAPLING" => "false",
-        "APP_X_OSCP_STAPLING" => "true"
-      }
+    test "CACRT and CACERT aliases are interchangeable for inline CA chains", %{fx: fx} do
+      for suffix <- ["CACRT", "CACERT"] do
+        env = %{
+          "APP_X_CRT" => fx.pem.a_cert,
+          "APP_X_KEY" => fx.pem.a_key,
+          "APP_X_#{suffix}" => fx.pem.ca_cert
+        }
 
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
-          [g] = disc.groups
-          assert g.ocsp_stapling? == false
-        end)
+        {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+        assert [g] = disc.groups, "suffix #{suffix} did not produce a group"
+        assert g.has_ca_chain?
+      end
+    end
 
-      assert log =~ "misspelling"
+    test "CACRT_FILE and CACERT_FILE aliases are interchangeable for CA files", %{fx: fx} do
+      for suffix <- ["CACRT_FILE", "CACERT_FILE"] do
+        env = %{
+          "APP_X_CRT" => fx.pem.a_cert,
+          "APP_X_KEY" => fx.pem.a_key,
+          "APP_X_#{suffix}" => fx.paths.ca_cert
+        }
+
+        {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+        assert [g] = disc.groups, "suffix #{suffix} did not produce a group"
+        assert g.has_ca_chain?
+      end
     end
   end
 

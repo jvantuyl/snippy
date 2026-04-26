@@ -14,7 +14,6 @@ defmodule Snippy.Discovery do
       :has_ca_chain?,
       :cert_source,
       :key_source,
-      :ocsp_stapling?,
       :spki_fingerprint,
       :key_fingerprint,
       :key_type,
@@ -37,12 +36,14 @@ defmodule Snippy.Discovery do
             errors: []
 
   # Suffix table: maps suffix -> {slot, kind}
-  # slot: :cert | :key | :password | :ca | :ocsp_stapling | :ocsp_stapling_typo
-  # kind: :inline | :file | :flag
+  # slot: :cert | :key | :password | :ca
+  # kind: :inline | :file
 
   @suffixes [
     {"_CRT", :cert, :inline},
     {"_CRT_FILE", :cert, :file},
+    {"_CERT", :cert, :inline},
+    {"_CERT_FILE", :cert, :file},
     {"_KEY", :key, :inline},
     {"_KEY_FILE", :key, :file},
     {"_PWD", :password, :inline},
@@ -55,8 +56,8 @@ defmodule Snippy.Discovery do
     {"_PASSWORD_FILE", :password, :file},
     {"_CACRT", :ca, :inline},
     {"_CACRT_FILE", :ca, :file},
-    {"_OCSP_STAPLING", :ocsp_stapling, :flag},
-    {"_OSCP_STAPLING", :ocsp_stapling_typo, :flag}
+    {"_CACERT", :ca, :inline},
+    {"_CACERT_FILE", :ca, :file}
   ]
 
   # Sorted longest-first so longer suffixes win in greedy matching
@@ -180,7 +181,6 @@ defmodule Snippy.Discovery do
   end
 
   defp build_raw_group(prefix, key, entries) do
-    {ocsp, typo_warned?} = extract_ocsp(entries)
     password = extract_password!(entries, prefix, key)
     cert = Enum.find(entries, &(&1.slot == :cert))
     key_var = Enum.find(entries, &(&1.slot == :key))
@@ -192,53 +192,8 @@ defmodule Snippy.Discovery do
       cert: cert,
       key_var: key_var,
       password: password,
-      ca: ca,
-      ocsp: ocsp,
-      typo_warned?: typo_warned?
+      ca: ca
     }
-  end
-
-  defp extract_ocsp(entries) do
-    canonical = Enum.find(entries, &(&1.slot == :ocsp_stapling))
-    typo = Enum.find(entries, &(&1.slot == :ocsp_stapling_typo))
-
-    typo_warned? =
-      cond do
-        typo && canonical ->
-          Logger.warning(
-            "snippy: #{typo.var} is a misspelling of _OCSP_STAPLING; using canonical"
-          )
-
-          true
-
-        typo ->
-          Logger.warning(
-            "snippy: #{typo.var} is a misspelling of _OCSP_STAPLING; honoring it anyway"
-          )
-
-          true
-
-        true ->
-          false
-      end
-
-    chosen = canonical || typo
-
-    flag =
-      case chosen do
-        nil -> false
-        e -> parse_bool!(e.val)
-      end
-
-    {flag, typo_warned?}
-  end
-
-  defp parse_bool!(val) when is_binary(val) do
-    case String.downcase(String.trim(val)) do
-      v when v in ["true", "on", "enabled", "enable", "1"] -> true
-      v when v in ["false", "off", "disabled", "disable", "0"] -> false
-      other -> raise ArgumentError, "Snippy: invalid boolean value #{inspect(other)}"
-    end
   end
 
   defp extract_password!(entries, prefix, key) do
@@ -549,7 +504,6 @@ defmodule Snippy.Discovery do
         has_ca_chain?: ca_ders != [],
         cert_source: g.cert_kind,
         key_source: g.key_kind,
-        ocsp_stapling?: g.ocsp,
         spki_fingerprint: Decoder.spki_fingerprint(leaf),
         key_fingerprint: Decoder.key_fingerprint(key),
         key_type: Decoder.key_type(key),
