@@ -107,15 +107,20 @@ defmodule Snippy.Decoder do
     _ -> {:error, :decrypt_failed}
   end
 
-  # The map we hand to the rest of Snippy. `der` is always plaintext (we
-  # re-encode after decryption). `record` is whatever OTP gave us back, which
-  # may be a traditional or PKCS#8 form depending on the input.
-  defp build_key({pem_type, der, :not_encrypted}, record) do
+  # The map we hand to the rest of Snippy. We always re-encode the record
+  # so `:asn1_type` and `:der` are consistent: `pem_entry_decode/1` for
+  # PKCS#8 unwraps the inner key (e.g. returns an `:RSAPrivateKey`
+  # record), but the original PEM `:der` would still be PKCS#8 — passing
+  # `{:RSAPrivateKey, <pkcs8-der>}` to `:ssl` then blows up at handshake
+  # time. Re-encoding from the record gives the matching DER.
+  defp build_key({pem_type, _der, :not_encrypted}, record) do
+    asn1_type = record_tag(record)
+
     %{
       pem_type: pem_type,
       record: record,
-      asn1_type: record_tag(record),
-      der: der
+      asn1_type: asn1_type,
+      der: :public_key.der_encode(asn1_type, record)
     }
   end
 
