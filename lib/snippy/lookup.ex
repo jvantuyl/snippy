@@ -1,103 +1,91 @@
 defmodule Snippy.Lookup do
   @moduledoc false
 
-  use Memoize
   require Logger
 
-  alias Snippy.Discovery
+  alias Snippy.Discovery.Group
   alias Snippy.Wildcard
 
-  # Public entry points -------------------------------------------------------
+  # All public entry points work over a list of fully-materialized %Group{}s
+  # (which carry the private :__ssl_payload__ map). This list comes from
+  # either:
+  #   * `Snippy.Store.lookup_groups/2` (the live shared scan), or
+  #   * the user-supplied `:discovered_certs` (a %Discovery{} from
+  #     `Snippy.discover_certificates/1`), in which case the caller must
+  #     hydrate the payloads from the Store before calling us — see
+  #     `hydrate_groups/1`.
+
+  # ---------------------------------------------------- Hydration helpers ---
 
   @doc """
-  Build the SNI fun for a Discovery.
+  Given a list of Groups from a `%Discovery{}`, return them with their
+  `ssl_payload` populated.
+
+  If a group already has a non-nil `ssl_payload` (i.e. it came from an
+  isolated discovery), it's returned as-is. If the payload is nil
+  (stripped before being placed on a public handle from a shared
+  discovery), look the full version up in the Store's ETS by
+  `(prefix, key)`. Groups without a materialized entry are dropped silently.
   """
-  def sni_fun(%Discovery{} = disc, opts) do
-    scope = build_scope(disc, opts)
-    fallback = fallback_entries(disc, scope)
+  def hydrate_groups(groups) do
+    Enum.flat_map(groups, fn
+      %Group{ssl_payload: payload} = g when not is_nil(payload) ->
+        [g]
+
+      %Group{prefix: pfx, key: key} ->
+        case Snippy.Store.materialized_group(pfx, key) do
+          nil -> []
+          %Group{} = g -> [g]
+        end
+    end)
+  end
+
+  # ---------------------------------------------------------------- API ---
+
+  @doc """
+  Build the SNI fun for a list of materialized groups.
+
+  Returns a closure suitable for the `:sni_fun` :ssl option.
+  """
+  def sni_fun(groups, opts) do
+    scope = build_scope(groups, opts)
+    fallback = fallback_entries(groups, scope)
+    scoped_groups = scoped(groups, scope)
 
     fn host ->
-      entries = entries_for(disc.id, normalize(host), scope)
+      host_norm = normalize(host)
+      matches = entries_for_host(scoped_groups, host_norm)
 
       cond do
-        entries != [] ->
-          [certs_keys: Enum.map(entries, fn {_gk, ssl_map, _g} -> ssl_map end)]
-
-        fallback != [] ->
-          [certs_keys: Enum.map(fallback, fn {_gk, ssl_map, _g} -> ssl_map end)]
-
-        true ->
-          []
+        matches != [] -> [certs_keys: ssl_payloads(matches)]
+        fallback != [] -> [certs_keys: ssl_payloads(fallback)]
+        true -> []
       end
     end
   end
 
   @doc """
   Build keyword opts for `:ssl.listen/2` (and equivalents).
-
-  Always includes `:sni_fun` and a `:certs_keys` snapshot built from the
-  default hostname (or the union of scoped groups when no default).
   """
-  def ssl_opts(%Discovery{} = disc, opts) do
-    scope = build_scope(disc, opts)
-    fallback = fallback_entries(disc, scope)
-    ssl_fun = sni_fun(disc, opts)
+  def ssl_opts(groups, opts) do
+    scope = build_scope(groups, opts)
+    fallback = fallback_entries(groups, scope)
+    fun = sni_fun(groups, opts)
 
     [
-      sni_fun: ssl_fun,
-      certs_keys: Enum.map(fallback, fn {_gk, ssl_map, _g} -> ssl_map end)
+      sni_fun: fun,
+      certs_keys: ssl_payloads(fallback)
     ]
   end
 
-  # Memoized lookup -----------------------------------------------------------
+  # ----------------------------------------------------------------- Scope
 
-  defmemo entries_for(disc_id, host_norm, scope_id), expires_in: :infinity do
-    do_lookup(disc_id, host_norm, scope_id)
-  end
-
-  defp do_lookup(disc_id, host_norm, scope_id) do
-    table = Snippy.TableOwner.table_name()
-    {_scope_id_value, scope} = scope_id_extract(scope_id)
-
-    exact = :ets.lookup(table, {:exact, disc_id, host_norm})
-    matches = entries_from_rows(exact)
-
-    matches =
-      if matches == [] do
-        host_labels = host_norm |> String.split(".")
-        wild_matches = scan_wildcards(table, disc_id, host_labels)
-        wild_matches
-      else
-        matches
-      end
-
-    apply_scope(matches, scope)
-  end
-
-  # ETS row scanning ----------------------------------------------------------
-
-  defp entries_from_rows(rows) do
-    Enum.map(rows, fn {_key, gk, ssl_map, group} -> {gk, ssl_map, group} end)
-  end
-
-  defp scan_wildcards(_table, _disc_id, []), do: []
-
-  defp scan_wildcards(table, disc_id, [_first | rest]) do
-    rows = :ets.lookup(table, {:wild, disc_id, rest})
-    entries_from_rows(rows)
-  end
-
-  # Scope filtering -----------------------------------------------------------
-
-  defp build_scope(disc, opts) do
-    only = Keyword.get(opts, :only, nil)
-    keys = Keyword.get(opts, :keys, nil) |> normalize_keys()
-
+  defp build_scope(groups, opts) do
     %{
-      only: only,
-      keys: keys,
-      default_hostname: disc.default_hostname,
-      scope_id: scope_id_for(only, keys)
+      only: Keyword.get(opts, :only, nil),
+      keys: opts |> Keyword.get(:keys, nil) |> normalize_keys(),
+      default_hostname: Keyword.get(opts, :default_hostname, nil),
+      groups: groups
     }
   end
 
@@ -110,18 +98,16 @@ defmodule Snippy.Lookup do
     end)
   end
 
-  defp scope_id_for(only, keys) do
-    {only && Enum.sort(only), keys && Enum.sort(keys)}
+  defp scoped(groups, %{only: nil, keys: nil}), do: groups
+
+  defp scoped(groups, scope) do
+    Enum.filter(groups, fn g -> in_scope?(g, scope) end)
   end
 
-  defp scope_id_extract({_only, _keys} = id), do: {id, %{only: elem(id, 0), keys: elem(id, 1)}}
+  defp in_scope?(_group, %{only: nil, keys: nil}), do: true
 
-  defp apply_scope(entries, %{only: nil, keys: nil}), do: entries
-
-  defp apply_scope(entries, scope) do
-    Enum.filter(entries, fn {{_prefix, group_key} = _gk, _ssl_map, group} ->
-      key_match?(group_key, scope.keys) or host_match?(group, scope.only)
-    end)
+  defp in_scope?(%Group{} = group, scope) do
+    key_match?(group.key, scope.keys) or host_match?(group, scope.only)
   end
 
   defp key_match?(_group_key, nil), do: false
@@ -129,74 +115,81 @@ defmodule Snippy.Lookup do
 
   defp host_match?(_group, nil), do: false
 
-  defp host_match?(group, only_patterns) do
+  defp host_match?(%Group{} = group, only_patterns) do
     Enum.any?(only_patterns, fn pattern ->
       Enum.any?(group.hostnames, fn ghost ->
-        # only_patterns are user-supplied filter patterns; they match against
-        # the group's advertised hostnames using wildcard semantics.
         Wildcard.match?(pattern, ghost) or Wildcard.match?(ghost, pattern) or
           Wildcard.normalize(pattern) == Wildcard.normalize(ghost)
       end)
     end)
   end
 
-  # Fallback entries (non-SNI clients) ---------------------------------------
+  # ------------------------------------------------------- Host resolution
 
-  defp fallback_entries(%Discovery{groups: []}, _scope), do: []
-
-  defp fallback_entries(%Discovery{} = disc, scope) do
-    table = Snippy.TableOwner.table_name()
-
-    case disc.default_hostname do
-      nil ->
-        # Use the first group whose key/host passes scope, or the first group.
-        scoped_groups =
-          disc.groups
-          |> Enum.filter(fn g -> in_scope?(g, scope) end)
-
-        chosen = if scoped_groups == [], do: hd(disc.groups), else: hd(scoped_groups)
-        gk = {chosen.prefix, chosen.key}
-        rows = :ets.lookup(table, {:group, disc.id, gk})
-        Enum.map(rows, fn {_key, ssl_map, group} -> {gk, ssl_map, group} end)
-
-      host ->
-        host_norm = normalize(host)
-        rows = :ets.lookup(table, {:exact, disc.id, host_norm})
-
-        rows =
-          if rows == [] do
-            host_labels = String.split(host_norm, ".")
-            scan_wildcards_raw(table, disc.id, host_labels)
-          else
-            rows
+  defp entries_for_host(groups, host_norm) do
+    exact =
+      Enum.filter(groups, fn g ->
+        Enum.any?(g.hostnames, fn pat ->
+          case Wildcard.parse(pat) do
+            {:exact, labels} -> Enum.join(labels, ".") == host_norm
+            _ -> false
           end
+        end)
+      end)
 
-        scoped =
-          rows
-          |> Enum.map(fn {_key, gk, ssl_map, group} -> {gk, ssl_map, group} end)
-          |> apply_scope(scope)
+    if exact != [] do
+      exact
+    else
+      host_labels = String.split(host_norm, ".")
+      tail = tl(host_labels || [])
 
-        if scoped == [] and scope.only != nil do
-          Logger.warning(
-            "snippy: default_hostname #{inspect(host)} excluded by scope; non-SNI fallback empty"
-          )
-        end
-
-        scoped
+      Enum.filter(groups, fn g ->
+        Enum.any?(g.hostnames, fn pat ->
+          case Wildcard.parse(pat) do
+            {:wild, labels} -> labels == tail
+            _ -> false
+          end
+        end)
+      end)
     end
   end
 
-  defp scan_wildcards_raw(_table, _disc_id, []), do: []
+  # ---------------------------------------------------- Fallback entries
 
-  defp scan_wildcards_raw(table, disc_id, [_first | rest]) do
-    :ets.lookup(table, {:wild, disc_id, rest})
+  defp fallback_entries([], _scope), do: []
+
+  defp fallback_entries(groups, %{default_hostname: nil} = scope) do
+    case scoped(groups, scope) do
+      [] -> [hd(groups)]
+      [first | _] = scoped_groups -> [first | List.delete(scoped_groups, first)] |> Enum.take(1)
+    end
   end
 
-  defp in_scope?(_group, %{only: nil, keys: nil}), do: true
+  defp fallback_entries(groups, %{default_hostname: host} = scope) do
+    host_norm = normalize(host)
+    scoped_groups = scoped(groups, scope)
+    matches = entries_for_host(scoped_groups, host_norm)
 
-  defp in_scope?(group, scope) do
-    gk = {group.prefix, group.key}
-    key_match?(gk, scope.keys) or host_match?(group, scope.only)
+    cond do
+      matches != [] ->
+        matches
+
+      scope.only != nil ->
+        Logger.warning(
+          "snippy: default_hostname #{inspect(host)} excluded by scope; non-SNI fallback empty"
+        )
+
+        []
+
+      true ->
+        []
+    end
+  end
+
+  # ---------------------------------------------------- Payload extraction
+
+  defp ssl_payloads(groups) do
+    Enum.map(groups, fn %Group{ssl_payload: payload} -> payload end)
   end
 
   defp normalize(host) when is_binary(host), do: Wildcard.normalize(host)

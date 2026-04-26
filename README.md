@@ -49,7 +49,7 @@ installed by adding `snippy` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:snippy, "~> 0.5.0"},
+    {:snippy, "~> 0.6.0"},
     # Optional: enables public-CA chain validation against the
     # Mozilla CA bundle shipped with castore.
     {:castore, "~> 1.0"}
@@ -81,44 +81,116 @@ export MYAPP_ADMIN_KEY_FILE=/run/secrets/admin.key.pem
 export MYAPP_ADMIN_PASSWORD_FILE=/run/secrets/admin.key.password
 ```
 
-Then ask Snippy to discover them and hand the result to your TLS listener:
+Each helper takes the prefix directly. The shared `Snippy.Store` does the
+env scan once on first use and caches both successes and failures, so calls
+are cheap to repeat.
 
 ```elixir
-{:ok, disc} = Snippy.discover_certificates(prefix: "MYAPP")
-
 # Plug.Cowboy
-Plug.Cowboy.https(MyAppWeb.Endpoint, [], [port: 4443] ++ Snippy.cowboy_opts(disc))
+Plug.Cowboy.https(
+  MyAppWeb.Endpoint,
+  [],
+  [port: 4443] ++ Snippy.cowboy_opts(prefix: "MYAPP")
+)
 
 # Bandit
-Bandit.start_link([plug: MyAppWeb.Endpoint, scheme: :https] ++ Snippy.bandit_opts(disc))
+Bandit.start_link(
+  [plug: MyAppWeb.Endpoint, scheme: :https]
+  ++ Snippy.bandit_opts(prefix: "MYAPP")
+)
 
 # Thousand Island
 ThousandIsland.start_link(
-  [port: 4443, handler_module: MyHandler] ++ Snippy.thousand_island_opts(disc)
+  [port: 4443, handler_module: MyHandler]
+  ++ Snippy.thousand_island_opts(prefix: "MYAPP")
 )
 
 # Ranch
-:ranch.start_listener(:https, :ranch_ssl, Snippy.ranch_opts(disc), MyProtocol, [])
+:ranch.start_listener(
+  :https,
+  :ranch_ssl,
+  Snippy.ranch_opts(prefix: "MYAPP"),
+  MyProtocol,
+  []
+)
 
 # Plain :ssl
-{:ok, listen_socket} = :ssl.listen(4443, Snippy.ssl_opts(disc))
+{:ok, listen_socket} = :ssl.listen(4443, Snippy.ssl_opts(prefix: "MYAPP"))
 ```
 
-For Phoenix endpoints, use `phx_endpoint_config/2` directly in your runtime
+For Phoenix endpoints, use `phx_endpoint_config/1` directly in your runtime
 config:
 
 ```elixir
 # config/runtime.exs
-{:ok, disc} = Snippy.discover_certificates(prefix: "MYAPP")
-
 config :my_app, MyAppWeb.Endpoint,
-  https: Snippy.phx_endpoint_config(disc, port: 4443, cipher_suite: :strong)
+  https:
+    Snippy.phx_endpoint_config(
+      prefix: "MYAPP",
+      port: 4443,
+      cipher_suite: :strong
+    )
 ```
 
-The opts already include both `:certs_keys` (for clients that don't send SNI)
-and `:sni_fun` (for clients that do). Multiple certs whose hostnames overlap
-are returned together so OTP can pick the one that matches the client's
-key-exchange algorithm.
+The result already includes both `:certs_keys` (for clients that don't
+send SNI) and `:sni_fun` (for clients that do). Multiple certs whose
+hostnames overlap are returned together so OTP can pick the one that
+matches the client's key-exchange algorithm.
+
+## How Discovery Works
+
+Snippy is built around the principle that work should happen exactly once,
+and only when it's needed. Three lazy phases sit behind every helper call:
+
+1. **Scan** (cheap, shared). On first use, `Snippy.Store` walks the entire
+   environment and records every variable whose name ends in a recognized
+   suffix (`_CRT`, `_KEY`, `_PWD`, ...). No PEM is decoded, no files are
+   read. This scan is shared across every helper call across every prefix.
+
+2. **Filter by prefix** (per call). Each helper takes the broad scan
+   results and peels off entries whose names start with the requested
+   prefix. This costs one pass over the in-memory scan list - cheap, and
+   no rescan is required when adding new helpers or new prefixes.
+
+3. **Materialize** (lazy, per group). Only when a helper actually asks
+   about a `(prefix, key)` group does Snippy decode PEM, decrypt keys,
+   verify the cert/key match, check expiry, and build the final `:ssl`
+   payload. Successes *and* errors are memoized in ETS, so repeated
+   lookups are constant-time and broken groups don't spam the log on
+   every request.
+
+This shape gives Snippy a small DoS surface: env vars that no helper ever
+asks about never get decoded, even if an attacker can set arbitrary
+environment variables in the process.
+
+### Pre-warming and the `:discovered_certs` escape hatch
+
+Most apps don't need to think about when materialization happens - the
+first inbound TLS handshake will pay for it once and every subsequent one
+will reuse the cache. If you want to control timing explicitly (e.g. fail
+fast at boot if a cert is bad), call `Snippy.discover_certificates/1`
+during application start. It returns a `%Snippy.Discovery{}` handle whose
+`:groups` is the successfully materialized set and whose `:errors`
+contains any per-group failures:
+
+```elixir
+{:ok, disc} = Snippy.discover_certificates(prefix: "MYAPP")
+
+if disc.errors != [] do
+  raise "snippy: bad certs at boot: #{inspect(disc.errors)}"
+end
+```
+
+You can also pass the handle into any helper via `:discovered_certs` to
+make a particular call use *that* discovery's groups instead of the
+shared store:
+
+```elixir
+Snippy.cowboy_opts(prefix: "MYAPP", discovered_certs: disc)
+```
+
+This is mainly useful when running tests with a custom `:env` or when you
+want a cert set pinned to one specific scan generation.
 
 ## Environment-Variable Conventions
 
@@ -171,35 +243,48 @@ matching is unambiguous.
 {:ok, disc} = Snippy.discover_certificates(opts)
 {:ok, disc} = Snippy.reload(disc)
 
-sni_fun     = Snippy.sni(disc, opts)
-ssl_opts    = Snippy.ssl_opts(disc, opts)
-cowboy_opts = Snippy.cowboy_opts(disc, opts)
-ranch_opts  = Snippy.ranch_opts(disc, opts)
-bandit_opts = Snippy.bandit_opts(disc, opts)
-ti_opts     = Snippy.thousand_island_opts(disc, opts)
-phx_opts    = Snippy.phx_endpoint_config(disc, opts)
+sni_fun     = Snippy.sni(opts)
+ssl_opts    = Snippy.ssl_opts(opts)
+cowboy_opts = Snippy.cowboy_opts(opts)
+ranch_opts  = Snippy.ranch_opts(opts)
+bandit_opts = Snippy.bandit_opts(opts)
+ti_opts     = Snippy.thousand_island_opts(opts)
+phx_opts    = Snippy.phx_endpoint_config(opts)
 ```
 
-### `discover_certificates/1` Options
+All helpers accept the same option groups (each is optional unless noted):
+
+### Required
+
+| Option | Description |
+| --- | --- |
+| `:prefix` | String, atom, or list of either |
+
+### Discovery passthrough
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `:prefix` | (required) | String, atom, or list of either |
 | `:case_sensitive` | `true` | Match env-var names case-sensitively |
+| `:env` | `System.get_env()` | Env map override (mainly for testing) |
+| `:reload_interval_ms` | `nil` | If set, the Store schedules background re-scans at this cadence |
+
+### Per-lookup
+
+| Option | Default | Description |
+| --- | --- | --- |
 | `:default_hostname` | `nil` | Hostname used to seed `:certs_keys` for non-SNI clients |
-| `:reload_interval_ms` | `nil` | If set, periodically re-scan the env and re-read `_FILE` sources |
 | `:expiry_grace_seconds` | `0` | Tolerate certs that expired up to this many seconds ago |
 | `:public_ca_validation` | `:auto` | `:auto`, `:always`, or `:never` (see below) |
-| `:env` | `System.get_env()` | Env map override (mainly for testing) |
+| `:only` | `nil` | List of hostname patterns; only matching groups are exposed |
+| `:keys` | `nil` | List of group key strings (or atoms); only matching groups are exposed |
 
-### `ssl_opts/2` and Friends
+`:only` and `:keys` are unioned: a group is included if it matches either.
+
+### Escape hatch
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `:only` | `nil` | List of hostname patterns; only matching groups are exposed |
-| `:keys` | `nil` | List of (prefix, key) tuples or key strings; only matching groups are exposed |
-
-`:only` and `:keys` are unioned: a group is included if it matches either.
+| `:discovered_certs` | `nil` | A `%Snippy.Discovery{}` from `discover_certificates/1`. When set, the helper uses *that* discovery and skips the shared Store entirely. |
 
 ## Validation Pipeline
 

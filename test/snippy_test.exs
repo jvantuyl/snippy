@@ -24,6 +24,7 @@ defmodule SnippyTest do
       assert g.cert_source == :inline
       assert g.key_source == :inline
       assert g.has_password? == false
+      assert disc.errors == []
     end
 
     test "discovers from _FILE variants", %{fx: fx} do
@@ -78,6 +79,7 @@ defmodule SnippyTest do
         end
 
       assert disc.groups == []
+      assert [{"APP", "X", _}] = disc.errors
     end
 
     test "drops expired cert", %{fx: fx} do
@@ -88,6 +90,7 @@ defmodule SnippyTest do
 
       {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
       assert disc.groups == []
+      assert [{"APP", "OLD", {:expired, _}}] = disc.errors
     end
 
     test "drops not-yet-valid cert", %{fx: fx} do
@@ -98,6 +101,7 @@ defmodule SnippyTest do
 
       {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
       assert disc.groups == []
+      assert [{"APP", "NEW", {:not_yet_valid, _}}] = disc.errors
     end
 
     test "expiry_grace_seconds keeps recently-expired cert", %{fx: fx} do
@@ -269,17 +273,17 @@ defmodule SnippyTest do
     end
   end
 
-  describe "phx_endpoint_config/2" do
+  describe "phx_endpoint_config/1" do
     test "merges Phoenix transport opts with Snippy SSL opts", %{fx: fx} do
       env = %{
         "APP_MAIN_CRT" => fx.pem.a_cert,
         "APP_MAIN_KEY" => fx.pem.a_key
       }
 
-      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
-
       opts =
-        Snippy.phx_endpoint_config(disc,
+        Snippy.phx_endpoint_config(
+          prefix: "APP",
+          env: env,
           port: 4443,
           cipher_suite: :strong,
           otp_app: :my_app
@@ -298,14 +302,74 @@ defmodule SnippyTest do
         "APP_MAIN_KEY" => fx.pem.a_key
       }
 
-      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
-
-      opts = Snippy.phx_endpoint_config(disc, port: 4443, only: ["a.example.com"])
+      opts =
+        Snippy.phx_endpoint_config(
+          prefix: "APP",
+          env: env,
+          port: 4443,
+          only: ["a.example.com"]
+        )
 
       refute Keyword.has_key?(opts, :only)
       refute Keyword.has_key?(opts, :keys)
       assert opts[:port] == 4443
       assert is_function(opts[:sni_fun], 1)
+    end
+
+    test "discovery passthrough opts (:prefix, :env) are stripped from result", %{fx: fx} do
+      env = %{
+        "APP_MAIN_CRT" => fx.pem.a_cert,
+        "APP_MAIN_KEY" => fx.pem.a_key
+      }
+
+      opts =
+        Snippy.phx_endpoint_config(
+          prefix: "APP",
+          env: env,
+          port: 4443
+        )
+
+      refute Keyword.has_key?(opts, :prefix)
+      refute Keyword.has_key?(opts, :env)
+    end
+  end
+
+  describe ":discovered_certs escape hatch" do
+    test "helpers accept a pre-built %Discovery{} and skip the shared Store", %{fx: fx} do
+      env = %{
+        "APP_MAIN_CRT" => fx.pem.a_cert,
+        "APP_MAIN_KEY" => fx.pem.a_key
+      }
+
+      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+
+      opts = Snippy.cowboy_opts(prefix: "APP", discovered_certs: disc)
+      assert is_function(opts[:sni_fun], 1)
+      assert is_list(opts[:certs_keys])
+    end
+  end
+
+  describe "lazy materialization" do
+    test "vars under an unrequested prefix do not get materialized", %{fx: fx} do
+      # Set up a valid group under PFXA and a deliberately-broken group
+      # under PFXB. Discovering with prefix=PFXA must not log the broken
+      # PFXB group's failure.
+      env = %{
+        "PFXA_GOOD_CRT" => fx.pem.a_cert,
+        "PFXA_GOOD_KEY" => fx.pem.a_key,
+        "PFXB_BROKEN_CRT" => "not even close to PEM",
+        "PFXB_BROKEN_KEY" => "neither is this"
+      }
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:ok, disc} = Snippy.discover_certificates(prefix: "PFXA", env: env)
+          assert [g] = disc.groups
+          assert g.key == "GOOD"
+        end)
+
+      refute log =~ "PFXB"
+      refute log =~ "BROKEN"
     end
   end
 end

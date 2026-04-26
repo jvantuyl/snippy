@@ -32,6 +32,7 @@ defmodule Snippy.Application do
     Snippy.OTPCheck.check!()
 
     children = [
+      {Task.Supervisor, name: Snippy.TaskSupervisor},
       Snippy.TableOwner,
       Snippy.Store
     ]

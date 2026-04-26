@@ -21,7 +21,11 @@ defmodule Snippy.Discovery do
       :not_before,
       :not_after,
       :chain_validation,
-      :chain_validation_reason
+      :chain_validation_reason,
+      # Internal: the :ssl `:certs_keys` map for this group. Populated when
+      # the group is materialized; nil on stripped public-handle groups
+      # returned from `Snippy.discover_certificates/1`.
+      :ssl_payload
     ]
   end
 
@@ -29,7 +33,8 @@ defmodule Snippy.Discovery do
             table: :snippy_certs,
             default_hostname: nil,
             reload_interval_ms: nil,
-            groups: []
+            groups: [],
+            errors: []
 
   # Suffix table: maps suffix -> {slot, kind}
   # slot: :cert | :key | :password | :ca | :ocsp_stapling | :ocsp_stapling_typo
@@ -59,40 +64,231 @@ defmodule Snippy.Discovery do
 
   def suffixes, do: @suffixes_sorted
 
-  @doc """
-  Run discovery against an env map (or System.get_env/0 if not given).
+  # ----------------------------------------------------------- Phase 1: scan
 
-  Returns a list of group records (success only). Drops groups whose
-  validation fails, logging an error.
+  @doc """
+  Cheap, broad env scan.
+
+  Walks the environment and emits one entry per env var whose name ends in
+  one of our recognized suffixes. **Does not** decode PEM, read cert/key
+  files, or validate anything. The full var name is preserved so later
+  phases can split off whatever prefix the caller is interested in.
+
+  Options:
+    * `:env` - env map override (default: `System.get_env/0`)
+    * `:case_sensitive` - default `true`. When `false`, suffix matching is
+      case-insensitive (we always upcase the recognition surface).
+
+  Returns a list of maps:
+
+      %{var: "MYAPP_API_CRT_FILE", suffix: "_CRT_FILE", slot: :cert,
+        kind: :file, val: "/run/secrets/api.crt.pem"}
   """
-  def discover(opts) do
+  def scan_all(opts \\ []) do
     env = opts[:env] || System.get_env()
     case_sensitive = Keyword.get(opts, :case_sensitive, true)
-    prefixes = normalize_prefixes!(opts[:prefix])
-    expiry_grace = Keyword.get(opts, :expiry_grace_seconds, 0)
+
+    Enum.flat_map(env, fn {var, val} ->
+      candidate = if case_sensitive, do: var, else: String.upcase(var)
+
+      case match_suffix_only(candidate) do
+        {:ok, suffix, slot, kind} ->
+          [%{var: var, suffix: suffix, slot: slot, kind: kind, val: val}]
+
+        :no_match ->
+          []
+      end
+    end)
+  end
+
+  defp match_suffix_only(var) do
+    Enum.find_value(@suffixes_sorted, :no_match, fn {suffix, slot, kind} ->
+      if String.ends_with?(var, suffix) and byte_size(var) > byte_size(suffix) do
+        {:ok, suffix, slot, kind}
+      end
+    end)
+  end
+
+  # ------------------------------------- Phase 1.5: filter scan by prefix(es)
+
+  @doc """
+  Given the output of `scan_all/1` and a list of normalized (uppercased)
+  prefixes, return entries whose var name starts with `<prefix>_` and whose
+  remainder (after stripping the prefix and the trailing suffix) is non-empty.
+
+  Each output entry adds `:prefix` and `:key` (both uppercase) to the input
+  shape.
+  """
+  def filter_by_prefixes(entries, prefixes, case_sensitive \\ true) do
+    Enum.flat_map(entries, fn entry ->
+      var_search = if case_sensitive, do: entry.var, else: String.upcase(entry.var)
+
+      Enum.find_value(prefixes, [], fn prefix ->
+        peel_prefix(entry, var_search, prefix)
+      end)
+      |> List.wrap()
+    end)
+  end
+
+  defp peel_prefix(entry, var_search, prefix) do
+    suffix = entry.suffix
+
+    cond do
+      prefix == "" ->
+        # No prefix: the "key" is everything before the suffix.
+        body_len = byte_size(var_search) - byte_size(suffix)
+
+        if body_len > 0 do
+          key = binary_part(var_search, 0, body_len) |> String.trim_leading("_")
+
+          if key != "" do
+            Map.merge(entry, %{prefix: "", key: key})
+          end
+        end
+
+      String.starts_with?(var_search, prefix <> "_") and
+          String.ends_with?(var_search, suffix) ->
+        body_start = byte_size(prefix) + 1
+        body_len = byte_size(var_search) - body_start - byte_size(suffix)
+
+        if body_len > 0 do
+          key = binary_part(var_search, body_start, body_len)
+
+          if key != "" do
+            Map.merge(entry, %{prefix: prefix, key: key})
+          end
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  # --------------------------------------------------------- Phase 2: groups
+
+  @doc """
+  Given a list of prefix-tagged entries (from `filter_by_prefixes/3`),
+  group them by `{prefix, key}` and return a list of raw group maps suitable
+  for `materialize_group/2`.
+  """
+  def group_entries(entries) do
+    entries
+    |> Enum.group_by(fn e -> {e.prefix, e.key} end)
+    |> Enum.map(fn {{prefix, key}, group_entries} ->
+      build_raw_group(prefix, key, group_entries)
+    end)
+  end
+
+  defp build_raw_group(prefix, key, entries) do
+    {ocsp, typo_warned?} = extract_ocsp(entries)
+    password = extract_password!(entries, prefix, key)
+    cert = Enum.find(entries, &(&1.slot == :cert))
+    key_var = Enum.find(entries, &(&1.slot == :key))
+    ca = Enum.find(entries, &(&1.slot == :ca))
+
+    %{
+      prefix: prefix,
+      key: key,
+      cert: cert,
+      key_var: key_var,
+      password: password,
+      ca: ca,
+      ocsp: ocsp,
+      typo_warned?: typo_warned?
+    }
+  end
+
+  defp extract_ocsp(entries) do
+    canonical = Enum.find(entries, &(&1.slot == :ocsp_stapling))
+    typo = Enum.find(entries, &(&1.slot == :ocsp_stapling_typo))
+
+    typo_warned? =
+      cond do
+        typo && canonical ->
+          Logger.warning(
+            "snippy: #{typo.var} is a misspelling of _OCSP_STAPLING; using canonical"
+          )
+
+          true
+
+        typo ->
+          Logger.warning(
+            "snippy: #{typo.var} is a misspelling of _OCSP_STAPLING; honoring it anyway"
+          )
+
+          true
+
+        true ->
+          false
+      end
+
+    chosen = canonical || typo
+
+    flag =
+      case chosen do
+        nil -> false
+        e -> parse_bool!(e.val)
+      end
+
+    {flag, typo_warned?}
+  end
+
+  defp parse_bool!(val) when is_binary(val) do
+    case String.downcase(String.trim(val)) do
+      v when v in ["true", "on", "enabled", "enable", "1"] -> true
+      v when v in ["false", "off", "disabled", "disable", "0"] -> false
+      other -> raise ArgumentError, "Snippy: invalid boolean value #{inspect(other)}"
+    end
+  end
+
+  defp extract_password!(entries, prefix, key) do
+    pw_entries = Enum.filter(entries, &(&1.slot == :password))
+
+    case pw_entries do
+      [] ->
+        nil
+
+      [single] ->
+        single
+
+      multiple ->
+        names = Enum.map(multiple, & &1.var)
+
+        raise ArgumentError,
+              "Snippy: multiple password variables for prefix=#{inspect(prefix)} key=#{key}: #{Enum.join(names, ", ")}"
+    end
+  end
+
+  # ------------------------------- Phase 3: materialize ONE group on demand
+
+  @doc """
+  Given a raw group (as built by `group_entries/1`) and validation opts,
+  produce either `{:ok, %Group{}}` (the struct includes a private
+  `:__ssl_payload__` map for use by lookup) or `{:error, reason}`.
+
+  Reads files, decodes PEM, validates, builds the SSL payload. This is the
+  expensive phase; it must only run for groups whose `(prefix, key)` an
+  actual helper is asking about.
+
+  Options:
+    * `:expiry_grace_seconds` - default 0
+    * `:public_ca_validation` - `:auto | :always | :never`, default `:auto`
+  """
+  def materialize_group(raw_group, opts \\ []) do
+    grace = Keyword.get(opts, :expiry_grace_seconds, 0)
     public_ca = Keyword.get(opts, :public_ca_validation, :auto)
 
     if public_ca == :always and not castore_available?() do
-      raise ArgumentError,
-            "public_ca_validation: :always requires the :castore dependency"
+      {:error, :castore_required_for_always_validation}
+    else
+      with {:ok, prepared} <- materialize_prepare(raw_group),
+           {:ok, group} <- validate_group(prepared, grace, public_ca) do
+        {:ok, group}
+      end
     end
-
-    raw_matches = scan_env(env, prefixes, case_sensitive)
-    Logger.debug("snippy: scanned #{map_size(env)} env vars, matched #{length(raw_matches)}")
-
-    grouped = group_matches(raw_matches)
-
-    grouped
-    |> Enum.map(&materialize_group/1)
-    |> Enum.map(&validate_group(&1, expiry_grace, public_ca))
-    |> Enum.reject(&is_nil/1)
   end
 
-  defp castore_available? do
-    Code.ensure_loaded?(CAStore) and function_exported?(CAStore, :file_path, 0)
-  end
-
-  # --- Prefix normalization ---
+  # ---------------------------------------------------- normalize prefixes
 
   def normalize_prefixes!(nil) do
     raise ArgumentError, "Snippy: :prefix option is required"
@@ -148,240 +344,60 @@ defmodule Snippy.Discovery do
     prefixes
   end
 
-  # --- Scanning ---
-
-  defp scan_env(env, prefixes, case_sensitive) do
-    Enum.flat_map(env, fn {var, val} ->
-      case match_var(var, prefixes, case_sensitive) do
-        {:ok, prefix, key, suffix, slot, kind} ->
-          Logger.debug(
-            "snippy: matched #{var} -> prefix=#{inspect(prefix)} key=#{key} suffix=#{suffix}"
-          )
-
-          [{prefix, key, suffix, slot, kind, var, val}]
-
-        :no_match ->
-          []
-      end
-    end)
+  defp castore_available? do
+    Code.ensure_loaded?(CAStore) and function_exported?(CAStore, :file_path, 0)
   end
 
-  defp match_var(var, prefixes, case_sensitive) do
-    var_search = if case_sensitive, do: var, else: String.upcase(var)
+  # ----------------------------------------------------- Materialization ---
 
-    Enum.find_value(prefixes, :no_match, fn prefix ->
-      prefix_search = if case_sensitive, do: prefix, else: prefix
-
-      candidate =
-        cond do
-          prefix == "" ->
-            var_search
-
-          String.starts_with?(var_search, prefix_search <> "_") ->
-            binary_part(
-              var_search,
-              byte_size(prefix_search) + 1,
-              byte_size(var_search) - byte_size(prefix_search) - 1
-            )
-
-          true ->
-            nil
-        end
-
-      if candidate do
-        match_suffix(candidate, prefix)
-      else
-        nil
-      end
-    end)
+  defp materialize_prepare(%{cert: nil, key_var: nil}) do
+    {:error, :no_cert_or_key}
   end
 
-  defp match_suffix(candidate, prefix) do
-    Enum.find_value(@suffixes_sorted, fn {suffix, slot, kind} ->
-      if String.ends_with?(candidate, suffix) and byte_size(candidate) > byte_size(suffix) do
-        key = binary_part(candidate, 0, byte_size(candidate) - byte_size(suffix))
-        # Trim leading underscore from key if present (when prefix was empty)
-        key = String.trim_leading(key, "_")
-
-        if key == "" do
-          nil
-        else
-          {:ok, prefix, key, suffix, slot, kind}
-        end
-      end
-    end)
+  defp materialize_prepare(%{cert: nil}) do
+    {:error, :key_without_cert}
   end
 
-  # --- Grouping ---
-
-  defp group_matches(matches) do
-    matches
-    |> Enum.group_by(fn {prefix, key, _suffix, _slot, _kind, _var, _val} -> {prefix, key} end)
-    |> Enum.map(fn {{prefix, key}, entries} ->
-      group = build_group_map(prefix, key, entries)
-      group
-    end)
+  defp materialize_prepare(%{key_var: nil}) do
+    {:error, :cert_without_key}
   end
 
-  defp build_group_map(prefix, key, entries) do
-    {ocsp, typo_warned?} = extract_ocsp(entries)
+  defp materialize_prepare(g) do
+    case resolve_password(g.password) do
+      {:ok, password_str} ->
+        cert = g.cert
+        key_var = g.key_var
 
-    password = extract_password!(entries, prefix, key)
+        prepared =
+          Map.merge(g, %{
+            cert_kind: cert.kind,
+            cert_var: cert.var,
+            cert_val: cert.val,
+            key_kind: key_var.kind,
+            key_var_name: key_var.var,
+            key_val: key_var.val,
+            password_str: password_str
+          })
 
-    cert =
-      Enum.find(entries, fn {_p, _k, _s, slot, _kind, _v, _val} -> slot == :cert end)
+        {:ok, prepared}
 
-    key_var =
-      Enum.find(entries, fn {_p, _k, _s, slot, _kind, _v, _val} -> slot == :key end)
-
-    ca =
-      Enum.find(entries, fn {_p, _k, _s, slot, _kind, _v, _val} -> slot == :ca end)
-
-    %{
-      prefix: prefix,
-      key: key,
-      cert: cert,
-      key_var: key_var,
-      password: password,
-      ca: ca,
-      ocsp: ocsp,
-      typo_warned?: typo_warned?
-    }
-  end
-
-  defp extract_ocsp(entries) do
-    canonical =
-      Enum.find(entries, fn {_p, _k, _s, slot, _kind, _v, _val} ->
-        slot == :ocsp_stapling
-      end)
-
-    typo =
-      Enum.find(entries, fn {_p, _k, _s, slot, _kind, _v, _val} ->
-        slot == :ocsp_stapling_typo
-      end)
-
-    typo_warned? =
-      cond do
-        typo && canonical ->
-          {_, _, _, _, _, var, _} = typo
-          Logger.warning("snippy: #{var} is a misspelling of _OCSP_STAPLING; using canonical")
-          true
-
-        typo ->
-          {_, _, _, _, _, var, _} = typo
-          Logger.warning("snippy: #{var} is a misspelling of _OCSP_STAPLING; honoring it anyway")
-          true
-
-        true ->
-          false
-      end
-
-    chosen = canonical || typo
-
-    flag =
-      case chosen do
-        nil -> false
-        {_p, _k, _s, _slot, _kind, _v, val} -> parse_bool!(val)
-      end
-
-    {flag, typo_warned?}
-  end
-
-  defp parse_bool!(val) when is_binary(val) do
-    case String.downcase(String.trim(val)) do
-      v when v in ["true", "on", "enabled", "enable", "1"] -> true
-      v when v in ["false", "off", "disabled", "disable", "0"] -> false
-      other -> raise ArgumentError, "Snippy: invalid boolean value #{inspect(other)}"
+      {:error, _} = err ->
+        err
     end
   end
 
-  defp extract_password!(entries, prefix, key) do
-    pw_entries =
-      Enum.filter(entries, fn {_p, _k, _s, slot, _kind, _v, _val} -> slot == :password end)
+  defp resolve_password(nil), do: {:ok, nil}
 
-    case pw_entries do
-      [] ->
-        nil
+  defp resolve_password(%{kind: :inline, val: val}), do: {:ok, val}
 
-      [single] ->
-        single
+  defp resolve_password(%{kind: :file, var: var, val: path}) do
+    Logger.warning("snippy: #{var} loads password from file (#{path})")
 
-      multiple ->
-        names = Enum.map(multiple, fn {_p, _k, _s, _slot, _kind, var, _val} -> var end)
-
-        raise ArgumentError,
-              "Snippy: multiple password variables for prefix=#{inspect(prefix)} key=#{key}: #{Enum.join(names, ", ")}"
+    case File.read(path) do
+      {:ok, contents} -> {:ok, contents}
+      {:error, reason} -> {:error, {:password_file, reason, path}}
     end
   end
-
-  # --- Materialization ---
-
-  defp materialize_group(%{cert: nil, key_var: nil} = g) do
-    Logger.debug("snippy: skipping #{inspect(g.prefix)}/#{g.key}: no cert or key")
-    nil
-  end
-
-  defp materialize_group(%{cert: nil} = g) do
-    Logger.error(
-      "snippy: #{inspect(g.prefix)}/#{g.key}: key present but no certificate; dropping"
-    )
-
-    nil
-  end
-
-  defp materialize_group(%{key_var: nil} = g) do
-    Logger.error(
-      "snippy: #{inspect(g.prefix)}/#{g.key}: certificate present but no key; dropping"
-    )
-
-    nil
-  end
-
-  defp materialize_group(g) do
-    {_, _, _, _, cert_kind, cert_var, cert_val} = g.cert
-    {_, _, _, _, key_kind, key_var, key_val} = g.key_var
-
-    password_str =
-      case g.password do
-        nil ->
-          nil
-
-        {_, _, _, _, :inline, _var, val} ->
-          val
-
-        {_, _, _, _, :file, var, path} ->
-          Logger.warning("snippy: #{var} loads password from file (#{path})")
-
-          case File.read(path) do
-            {:ok, contents} -> contents
-            {:error, reason} -> {:error, {:password_file, reason, path}}
-          end
-      end
-
-    case password_str do
-      {:error, _reason} = err ->
-        Logger.error(
-          "snippy: #{inspect(g.prefix)}/#{g.key}: cannot read password file: #{inspect(err)}"
-        )
-
-        nil
-
-      _ ->
-        Map.merge(g, %{
-          cert_kind: cert_kind,
-          cert_var: cert_var,
-          cert_val: cert_val,
-          key_kind: key_kind,
-          key_var_name: key_var,
-          key_val: key_val,
-          password_str: password_str
-        })
-    end
-  end
-
-  # --- Validation ---
-
-  defp validate_group(nil, _grace, _public_ca), do: nil
 
   defp validate_group(g, grace, public_ca) do
     label = "#{inspect(g.prefix)}/#{g.key}"
@@ -394,10 +410,6 @@ defmodule Snippy.Discovery do
          {chain_status, chain_reason} <-
            validate_chain_or_castore(hd(cert_ders), ca_ders, public_ca, label) do
       build_group_struct(g, cert_ders, key, ca_ders, chain_status, chain_reason)
-    else
-      {:error, reason} ->
-        Logger.error("snippy: #{label}: #{format_error(reason)}; dropping")
-        nil
     end
   end
 
@@ -424,27 +436,24 @@ defmodule Snippy.Discovery do
       {:error, {:file_read, e.reason, path}}
   end
 
-  defp check_match([leaf | _], key, label) do
+  defp check_match([leaf | _], key, _label) do
     if Decoder.cert_key_match?(leaf, key) do
       :ok
     else
-      Logger.error("snippy: #{label}: cert/key mismatch")
       {:error, :cert_key_mismatch}
     end
   end
 
-  defp check_validity([leaf | _], label, grace) do
+  defp check_validity([leaf | _], _label, grace) do
     {not_before, not_after} = Decoder.cert_validity(leaf)
     now = DateTime.utc_now()
     grace_dt_after = DateTime.add(not_after, grace, :second)
 
     cond do
       DateTime.compare(now, not_before) == :lt ->
-        Logger.error("snippy: #{label}: not yet valid until #{not_before}")
         {:error, {:not_yet_valid, not_before}}
 
       DateTime.compare(now, grace_dt_after) == :gt ->
-        Logger.error("snippy: #{label}: expired at #{not_after}")
         {:error, {:expired, not_after}}
 
       true ->
@@ -454,16 +463,14 @@ defmodule Snippy.Discovery do
 
   defp load_ca_chain(%{ca: nil}), do: {:ok, []}
 
-  defp load_ca_chain(%{ca: {_, _, _, _, :inline, _var, pem}}) do
+  defp load_ca_chain(%{ca: %{kind: :inline, val: pem}}) do
     Decoder.decode_certs(pem)
   end
 
-  defp load_ca_chain(%{ca: {_, _, _, _, :file, _var, path}}) do
+  defp load_ca_chain(%{ca: %{kind: :file, val: path}}) do
     Decoder.decode_certs_file(path)
   end
 
-  # `intermediates` are CA certs we discovered ourselves (`_CACRT*`); they
-  # never include the leaf. `Decoder.validate_chain` expects the same shape.
   defp validate_chain_or_castore(leaf, intermediates, public_ca, label) do
     cond do
       intermediates != [] ->
@@ -498,7 +505,6 @@ defmodule Snippy.Discovery do
 
           {:error, reason} ->
             if mode == :always do
-              Logger.error("snippy: #{label}: public CA validation failed: #{inspect(reason)}")
               {:error_chain, reason}
             else
               Logger.warning(
@@ -520,15 +526,22 @@ defmodule Snippy.Discovery do
     Logger.info("snippy: #{label}: no chain validation; trusting cert as-is")
   end
 
-  defp build_group_struct(g, cert_ders, key, ca_ders, chain_status, chain_reason) do
-    if chain_status == :error_chain do
-      nil
-    else
-      [leaf | _] = cert_ders
-      {not_before, not_after} = Decoder.cert_validity(leaf)
-      hostnames = Decoder.cert_hostnames(leaf)
+  defp build_group_struct(g, cert_ders, key, ca_ders, :error_chain, reason) do
+    _ = g
+    _ = cert_ders
+    _ = key
+    _ = ca_ders
+    {:error, {:public_ca_required, reason}}
+  end
 
-      %Group{
+  defp build_group_struct(g, cert_ders, key, ca_ders, chain_status, chain_reason) do
+    [leaf | _] = cert_ders
+    {not_before, not_after} = Decoder.cert_validity(leaf)
+    hostnames = Decoder.cert_hostnames(leaf)
+    payload = build_ssl_payload(cert_ders, key, ca_ders, g)
+
+    group =
+      struct!(Group,
         prefix: g.prefix,
         key: g.key,
         hostnames: hostnames,
@@ -543,19 +556,11 @@ defmodule Snippy.Discovery do
         not_before: not_before,
         not_after: not_after,
         chain_validation: chain_status,
-        chain_validation_reason: chain_reason
-      }
-      |> with_ssl_payload(cert_ders, key, ca_ders, g)
-    end
-  end
+        chain_validation_reason: chain_reason,
+        ssl_payload: payload
+      )
 
-  # Stash the payload used to build :ssl options on the struct via a private
-  # field carried in process dict-free form by attaching as a separate element
-  # in ETS. We return both pieces from the caller via {:group, struct, payload}.
-  # For now, attach to a private map under :__ssl_payload__.
-  defp with_ssl_payload(struct, cert_ders, key, ca_ders, g) do
-    payload = build_ssl_payload(cert_ders, key, ca_ders, g)
-    Map.put(struct, :__ssl_payload__, payload)
+    {:ok, group}
   end
 
   defp build_ssl_payload(cert_ders, key, ca_ders, g) do
@@ -589,14 +594,32 @@ defmodule Snippy.Discovery do
     {type, der}
   end
 
-  defp format_error({:file_read, reason, path}), do: "cannot read #{path}: #{inspect(reason)}"
-  defp format_error(:invalid_pem), do: "invalid PEM"
-  defp format_error(:no_certificates_found), do: "no certificates found"
-  defp format_error(:no_key_found), do: "no private key found"
-  defp format_error(:bad_password), do: "wrong password (or unable to decrypt)"
-  defp format_error(:encrypted_key_no_password), do: "key is encrypted but no password set"
-  defp format_error(:cert_key_mismatch), do: "cert public key does not match private key"
-  defp format_error({:not_yet_valid, t}), do: "not yet valid (notBefore=#{t})"
-  defp format_error({:expired, t}), do: "expired (notAfter=#{t})"
-  defp format_error(other), do: inspect(other)
+  @doc """
+  Format a materialization error reason as a human-readable string for logs.
+  """
+  def format_error({:file_read, reason, path}), do: "cannot read #{path}: #{inspect(reason)}"
+
+  def format_error({:password_file, reason, path}),
+    do: "cannot read password file #{path}: #{inspect(reason)}"
+
+  def format_error(:invalid_pem), do: "invalid PEM"
+  def format_error(:no_certificates_found), do: "no certificates found"
+  def format_error(:no_key_found), do: "no private key found"
+  def format_error(:bad_password), do: "wrong password (or unable to decrypt)"
+  def format_error(:encrypted_key_no_password), do: "key is encrypted but no password set"
+  def format_error(:cert_key_mismatch), do: "cert public key does not match private key"
+  def format_error(:no_cert_or_key), do: "no cert or key found for group"
+  def format_error(:key_without_cert), do: "key present but no certificate"
+  def format_error(:cert_without_key), do: "certificate present but no key"
+
+  def format_error(:castore_required_for_always_validation),
+    do: "public_ca_validation: :always requires the :castore dependency"
+
+  def format_error({:not_yet_valid, t}), do: "not yet valid (notBefore=#{t})"
+  def format_error({:expired, t}), do: "expired (notAfter=#{t})"
+
+  def format_error({:public_ca_required, reason}),
+    do: "public CA validation required and failed: #{inspect(reason)}"
+
+  def format_error(other), do: inspect(other)
 end

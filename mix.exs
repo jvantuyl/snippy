@@ -1,7 +1,7 @@
 defmodule Snippy.MixProject do
   use Mix.Project
 
-  @version "0.5.0"
+  @version "0.6.0"
 
   def project do
     [
@@ -36,7 +36,6 @@ defmodule Snippy.MixProject do
   defp deps do
     [
       {:domainname, "~> 0.1.5"},
-      {:memoize, "~> 1.4"},
       {:castore, "~> 1.0", optional: true},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -53,7 +52,7 @@ defmodule Snippy.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/jvantuyl/snippy"},
-      files: ~w(lib mix.exs README.md LICENSE.md .formatter.exs)
+      files: ~w(lib mix.exs README.md LICENSE.md CHANGELOG.md .formatter.exs)
     ]
   end
 
@@ -61,7 +60,11 @@ defmodule Snippy.MixProject do
     [
       main: "readme",
       api_reference: false,
-      extras: ["README.md": [title: "Overview"], "LICENSE.md": [title: "License"]],
+      extras: [
+        "README.md": [title: "Overview"],
+        "CHANGELOG.md": [title: "Changelog"],
+        "LICENSE.md": [title: "License"]
+      ],
       authors: ["Jayson Vantuyl"],
       source_ref: "v#{@version}"
     ]
