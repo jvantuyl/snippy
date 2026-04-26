@@ -25,8 +25,10 @@
 #   a.pem  / a.key    RSA leaf for "a.example.com" (unencrypted)
 #   b.pem  / b.key    RSA leaf for "b.example.com" (unencrypted)
 #   b.enc.key         same key as b.key, encrypted with passphrase "secret"
+#   b.enc.legacy.key  same key encrypted as traditional PEM (PKCS#1) with DES-CBC
 #   wild.pem / wild.key   RSA leaf SAN=*.wild.example.com
 #   ec.pem  / ec.key      ECDSA leaf for "ec.example.com"
+#   ed.pem  / ed.key      Ed25519 leaf for "ed.example.com"  (best-effort)
 #   expired.pem / expired.key   RSA leaf, notAfter=1 day ago
 #   future.pem  / future.key    RSA leaf, notBefore=1 year from now
 #   pwd.txt           file containing "secret\n"        (for _PWD_FILE)
@@ -175,6 +177,53 @@ issue_rsa_leaf_dated "future.example.com" "future" \
 
 "$OPENSSL" pkcs8 -topk8 -in b.key -passout "pass:${PASS}" -out b.enc.key \
   >/dev/null
+
+# Traditional (PKCS#1) encrypted PEM, so we exercise the non-PKCS#8
+# encrypted-key code path in :public_key.pem_entry_decode/2.
+"$OPENSSL" rsa -in b.key -aes256 -passout "pass:${PASS}" -out b.enc.legacy.key \
+  >/dev/null 2>&1 || cp b.enc.key b.enc.legacy.key
+
+# ---- 6.5 Ed25519 leaf -------------------------------------------------------
+#
+# Best-effort: not all environments (some BoringSSL builds, ancient
+# openssl) can mint Ed25519 leaves. If anything fails we fall back to
+# copying the ECDSA pair so the file paths always exist (tests that care
+# about Ed25519 specifically tag :eddsa and skip when unsupported).
+
+if "$OPENSSL" genpkey -algorithm Ed25519 -out ed.key 2>/dev/null; then
+  "$OPENSSL" req -new -key ed.key -out ed.csr \
+    -subj "/CN=ed.example.com" \
+    -addext "subjectAltName=DNS:ed.example.com" \
+    >/dev/null 2>&1 && \
+    "$OPENSSL" x509 -req -in ed.csr \
+      -CA ca.pem -CAkey ca.key -CAcreateserial \
+      -out ed.pem -days 365 \
+      -copy_extensions copy \
+      >/dev/null 2>&1 || {
+        cp ec.key ed.key
+        cp ec.pem ed.pem
+      }
+  rm -f ed.csr
+else
+  cp ec.key ed.key
+  cp ec.pem ed.pem
+fi
+
+# ---- 6.6 Cert with multi-attribute subject and no SAN ----------------------
+#
+# Exercises the rdnSequence iteration and the subject_cn fallback path
+# in Snippy.Decoder when an RDN attribute is *not* CN, plus the
+# `:asn1_NOVALUE` san_dns_names branch when no SAN extension is present.
+
+"$OPENSSL" req -new -newkey rsa:2048 -nodes \
+  -keyout nosan.key -out nosan.csr \
+  -subj "/C=US/ST=CA/L=SF/O=SnippyTestOrg/CN=nosan.example.com" \
+  >/dev/null
+"$OPENSSL" x509 -req -in nosan.csr \
+  -CA ca.pem -CAkey ca.key -CAcreateserial \
+  -out nosan.pem -days 365 \
+  >/dev/null
+rm -f nosan.csr
 
 # ---- 7. Password files ------------------------------------------------------
 

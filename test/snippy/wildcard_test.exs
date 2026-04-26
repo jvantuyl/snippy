@@ -73,4 +73,13 @@ defmodule Snippy.WildcardTest do
   test "wildcard? identifies bare star" do
     assert Wildcard.wildcard?("*")
   end
+
+  test "wildcard pattern does not match an empty host" do
+    # Hits the `[] -> false` branch in match?/2.
+    refute Wildcard.match?("*.example.com", "")
+  end
+
+  test "parse on empty input returns no labels" do
+    assert {:exact, []} = Wildcard.parse("")
+  end
 end

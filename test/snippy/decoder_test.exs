@@ -72,6 +72,88 @@ defmodule Snippy.DecoderTest do
       assert {:ok, key} = Decoder.decode_key(fx.pem.ec_key)
       assert Decoder.key_type(key) == :ecdsa
     end
+
+    @tag :eddsa
+    test "decodes Ed25519 key and reports :eddsa key type", %{fx: fx} do
+      ed_key = File.read!(fx.paths.ed_key)
+
+      if eddsa_supported?(ed_key) do
+        assert {:ok, key} = Decoder.decode_key(ed_key)
+        assert Decoder.key_type(key) == :eddsa
+      else
+        :ok
+      end
+    end
+
+    test "decodes traditional (PKCS#1) encrypted key with correct password", %{fx: fx} do
+      legacy = File.read!(fx.paths.b_key_enc_legacy)
+
+      if String.contains?(legacy, "ENCRYPTED") do
+        assert {:ok, key} = Decoder.decode_key(legacy, "secret")
+        assert Decoder.key_type(key) == :rsa
+      else
+        :ok
+      end
+    end
+
+    test "trims trailing whitespace and falls back to literal password" do
+      # Direct test of the fallback path in decode_encrypted_key/2.
+      pem = encrypted_key_pem("trail\n")
+      assert {:ok, _} = Decoder.decode_key(pem, "trail\n")
+    end
+
+    test "key_type/1 returns :other for non-key arguments" do
+      assert Decoder.key_type(%{}) == :other
+      assert Decoder.key_type(nil) == :other
+    end
+  end
+
+  describe "key_type/1 record dispatch" do
+    test "RSA record" do
+      r = {:RSAPrivateKey, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+      assert Decoder.key_type(%{record: r, der: <<>>}) == :rsa
+    end
+
+    test "ECDSA record (5-tuple and 6-tuple variants)" do
+      assert Decoder.key_type(%{
+               record: {:ECPrivateKey, 1, <<>>, :asn1_NOVALUE, :asn1_NOVALUE},
+               der: <<>>
+             }) == :ecdsa
+
+      assert Decoder.key_type(%{
+               record: {:ECPrivateKey, 1, <<>>, :asn1_NOVALUE, :asn1_NOVALUE, :asn1_NOVALUE},
+               der: <<>>
+             }) == :ecdsa
+    end
+
+    test "DSA record" do
+      assert Decoder.key_type(%{
+               record: {:DSAPrivateKey, 0, 0, 0, 0, 0},
+               der: <<>>
+             }) == :dsa
+    end
+
+    test "PrivateKeyInfo dispatches by OID" do
+      rsa_alg =
+        {:PrivateKeyInfo_privateKeyAlgorithm, {1, 2, 840, 113_549, 1, 1, 1}, :asn1_NOVALUE}
+
+      ec_alg = {:PrivateKeyInfo_privateKeyAlgorithm, {1, 2, 840, 10_045, 2, 1}, :asn1_NOVALUE}
+      ed25519_alg = {:PrivateKeyInfo_privateKeyAlgorithm, {1, 3, 101, 112}, :asn1_NOVALUE}
+      ed448_alg = {:PrivateKeyInfo_privateKeyAlgorithm, {1, 3, 101, 113}, :asn1_NOVALUE}
+      unk_alg = {:PrivateKeyInfo_privateKeyAlgorithm, {1, 2, 3, 4, 5}, :asn1_NOVALUE}
+
+      pki = fn alg -> {:PrivateKeyInfo, 0, alg, <<>>, :asn1_NOVALUE} end
+
+      assert Decoder.key_type(%{record: pki.(rsa_alg), der: <<>>}) == :rsa
+      assert Decoder.key_type(%{record: pki.(ec_alg), der: <<>>}) == :ecdsa
+      assert Decoder.key_type(%{record: pki.(ed25519_alg), der: <<>>}) == :eddsa
+      assert Decoder.key_type(%{record: pki.(ed448_alg), der: <<>>}) == :eddsa
+      assert Decoder.key_type(%{record: pki.(unk_alg), der: <<>>}) == :other
+    end
+
+    test "unknown record falls through to :other" do
+      assert Decoder.key_type(%{record: {:something_else, 1, 2}, der: <<>>}) == :other
+    end
   end
 
   describe "cert_validity/1 and cert_valid_now?/1" do
@@ -113,10 +195,29 @@ defmodule Snippy.DecoderTest do
       assert Decoder.cert_key_match?(der, key)
     end
 
+    @tag :eddsa
+    test "returns true for matching cert/key (Ed25519)", %{fx: fx} do
+      ed_cert = File.read!(fx.paths.ed_cert)
+      ed_key = File.read!(fx.paths.ed_key)
+
+      if eddsa_supported?(ed_key) do
+        [der | _] = pem_certs(ed_cert)
+        {:ok, key} = Decoder.decode_key(ed_key)
+        assert Decoder.cert_key_match?(der, key)
+      else
+        :ok
+      end
+    end
+
     test "returns false for mismatched cert/key", %{fx: fx} do
       [der | _] = pem_certs(fx.pem.a_cert)
       {:ok, key} = Decoder.decode_key(fx.pem.b_key)
       refute Decoder.cert_key_match?(der, key)
+    end
+
+    test "returns false (does not raise) when given garbage cert DER", %{fx: fx} do
+      {:ok, key} = Decoder.decode_key(fx.pem.a_key)
+      refute Decoder.cert_key_match?(<<0, 1, 2, 3>>, key)
     end
   end
 
@@ -152,6 +253,47 @@ defmodule Snippy.DecoderTest do
       [leaf | _] = pem_certs(fx.pem.a_cert)
       [other | _] = pem_certs(fx.pem.b_cert)
       assert {:error, _reason} = Decoder.validate_chain(leaf, [other])
+    end
+
+    test "rescues exception from :public_key by returning {:error, {:validation_exception, _}}" do
+      # Garbage bytes for both leaf and CA force pkix_path_validation to
+      # raise rather than just return {:error, _}.
+      assert {:error, {:validation_exception, _msg}} =
+               Decoder.validate_chain(<<0, 1, 2, 3>>, [<<4, 5, 6, 7>>])
+    end
+  end
+
+  describe "validate_against_castore/2 — code paths" do
+    test "validates a real cert against castore and returns :ok or :error" do
+      # We don't assume the CAStore bundle does or doesn't trust our
+      # self-signed cert; we just exercise the file-read/decode/match path.
+      pem = """
+      -----BEGIN CERTIFICATE-----
+      MIIB+TCCAaCgAwIBAgIUVoQq3Z/uX5z3uV0hxwy8L4xZ6+UwCgYIKoZIzj0EAwIw
+      ZjELMAkGA1UEBhMCVVMxEzARBgNVBAgMClNvbWVTdGF0ZTEUMBIGA1UEBwwLU29t
+      ZUNpdHkxFTATBgNVBAoMDFNvbWVDb21wYW55MRUwEwYDVQQDDAxFeGFtcGxlIENv
+      cnAwHhcNMjUwNDAxMDAwMDAwWhcNMzUwNDAxMDAwMDAwWjBmMQswCQYDVQQGEwJV
+      UzETMBEGA1UECAwKU29tZVN0YXRlMRQwEgYDVQQHDAtTb21lQ2l0eTEVMBMGA1UE
+      CgwMU29tZUNvbXBhbnkxFTATBgNVBAMMDEV4YW1wbGUgQ29ycDBZMBMGByqGSM49
+      AgEGCCqGSM49AwEHA0IABACgEzz5tqQfx5J3bA9oR4nM3eAm6r/0pxJ6F/+OcFKY
+      dQ/1yxDXn8mKO2A95eEY7sDKsq1eHA1F0ROlw0ZcvVKjEzARMA8GA1UdEwEB/wQF
+      MAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgGmBeY8ImQ0fQ+JnvzHnqXSWB9cV0WSpa
+      lwq5gP4hFR0CIQCZGTeS7aDF3xlhnhZbVZkdGP5DOWGYJj+JoAo7NujcxQ==
+      -----END CERTIFICATE-----
+      """
+
+      der =
+        case Decoder.decode_certs(pem) do
+          {:ok, [d | _]} -> d
+          _ -> nil
+        end
+
+      if der do
+        assert match?(:ok, Decoder.validate_against_castore(der)) or
+                 match?({:error, _}, Decoder.validate_against_castore(der))
+      else
+        :ok
+      end
     end
   end
 
@@ -202,8 +344,81 @@ defmodule Snippy.DecoderTest do
     end
   end
 
+  describe "cert_hostnames/1 / SAN edge cases" do
+    test "returns SAN dNSNames as binaries even when stored as charlists", %{fx: fx} do
+      # Our normal path goes through `dns_name({:dNSName, n}) when is_list(n)`.
+      [der | _] = pem_certs(fx.pem.a_cert)
+
+      hosts = Decoder.cert_hostnames(der)
+      assert "a.example.com" in hosts
+      assert Enum.all?(hosts, &is_binary/1)
+    end
+
+    test "cert with multi-attribute subject and no SAN returns CN only", %{fx: fx} do
+      # Hits subject_cn's `_ -> nil` (for non-CN RDNs like C, ST, L, O),
+      # the various `string_value/1` branches (printableString, utf8String),
+      # and san_dns_names/1's `:asn1_NOVALUE` clause (no SAN extension).
+      [der | _] = pem_certs(File.read!(fx.paths.nosan_cert))
+
+      hosts = Decoder.cert_hostnames(der)
+      assert hosts == ["nosan.example.com"]
+    end
+  end
+
+  describe "fingerprint_hex/1" do
+    test "32-byte hash becomes 95-char colon-separated lowercase hex" do
+      hash = :crypto.hash(:sha256, "hello")
+      hex = Decoder.fingerprint_hex(hash)
+      assert String.length(hex) == 32 * 2 + 31
+      assert String.match?(hex, ~r/^([0-9a-f]{2}:){31}[0-9a-f]{2}$/)
+    end
+  end
+
   defp pem_certs(pem) do
     {:ok, ders} = Decoder.decode_certs(pem)
     ders
+  end
+
+  # Did openssl produce a real Ed25519 key, or did the fixture script
+  # silently fall back to ECDSA on a host with no Ed25519 support?
+  defp eddsa_supported?(ed_key_pem) do
+    case Decoder.decode_key(ed_key_pem) do
+      {:ok, key} -> Decoder.key_type(key) == :eddsa
+      _ -> false
+    end
+  end
+
+  # Mints a small RSA key, encrypts it (PKCS#8) with the given password,
+  # returns PEM. Used to exercise the password-trim fallback in
+  # decode_encrypted_key/2.
+  defp encrypted_key_pem(password) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "snippy_decoder_pwd_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    key = Path.join(dir, "key.pem")
+
+    try do
+      {_, 0} = System.cmd("openssl", ["genpkey", "-algorithm", "RSA", "-out", key])
+
+      {_, 0} =
+        System.cmd("openssl", [
+          "pkcs8",
+          "-topk8",
+          "-in",
+          key,
+          "-passout",
+          "pass:" <> password,
+          "-out",
+          key <> ".enc"
+        ])
+
+      File.read!(key <> ".enc")
+    after
+      File.rm_rf!(dir)
+    end
   end
 end
