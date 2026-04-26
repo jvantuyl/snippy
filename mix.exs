@@ -40,6 +40,7 @@ defmodule Snippy.MixProject do
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:excoveralls, "~> 0.18", only: :test},
+      {:rewire, "~> 0.10", only: :test},
       {:stream_data, "~> 1.1", only: :test},
       # test-only server adapters
       {:plug_cowboy, "~> 2.8", only: :test},
