@@ -62,7 +62,8 @@ defmodule Snippy.Decoder do
     end
   end
 
-  defp find_key_entry(entries) do
+  @doc false
+  def find_key_entry(entries) do
     Enum.find(entries, fn
       {:RSAPrivateKey, _, _} -> true
       {:ECPrivateKey, _, _} -> true
@@ -143,12 +144,13 @@ defmodule Snippy.Decoder do
   def key_type(%{record: record}), do: record_to_type(record)
   def key_type(_), do: :other
 
-  defp record_to_type({:RSAPrivateKey, _, _, _, _, _, _, _, _, _, _}), do: :rsa
-  defp record_to_type({:ECPrivateKey, _, _, _, _}), do: :ecdsa
-  defp record_to_type({:ECPrivateKey, _, _, _, _, _}), do: :ecdsa
-  defp record_to_type({:DSAPrivateKey, _, _, _, _, _}), do: :dsa
+  @doc false
+  def record_to_type({:RSAPrivateKey, _, _, _, _, _, _, _, _, _, _}), do: :rsa
+  def record_to_type({:ECPrivateKey, _, _, _, _}), do: :ecdsa
+  def record_to_type({:ECPrivateKey, _, _, _, _, _}), do: :ecdsa
+  def record_to_type({:DSAPrivateKey, _, _, _, _, _}), do: :dsa
 
-  defp record_to_type({:PrivateKeyInfo, _v, alg, _key, _attrs}) do
+  def record_to_type({:PrivateKeyInfo, _v, alg, _key, _attrs}) do
     case alg_oid(alg) do
       {1, 2, 840, 113_549, 1, 1, 1} -> :rsa
       {1, 2, 840, 10_045, 2, 1} -> :ecdsa
@@ -158,17 +160,19 @@ defmodule Snippy.Decoder do
     end
   end
 
-  defp record_to_type(_), do: :other
+  def record_to_type(_), do: :other
 
-  defp alg_oid({:PrivateKeyInfo_privateKeyAlgorithm, oid, _}), do: oid
-  defp alg_oid({:AlgorithmIdentifier, oid, _}), do: oid
-  defp alg_oid({:PublicKeyAlgorithm, oid, _}), do: oid
-  defp alg_oid({:SignatureAlgorithm, oid, _}), do: oid
+  @doc false
+  def alg_oid({:PrivateKeyInfo_privateKeyAlgorithm, oid, _}), do: oid
+  def alg_oid({:AlgorithmIdentifier, oid, _}), do: oid
+  def alg_oid({:PublicKeyAlgorithm, oid, _}), do: oid
+  def alg_oid({:SignatureAlgorithm, oid, _}), do: oid
 
-  defp alg_params({:PrivateKeyInfo_privateKeyAlgorithm, _, p}), do: p
-  defp alg_params({:AlgorithmIdentifier, _, p}), do: p
-  defp alg_params({:PublicKeyAlgorithm, _, p}), do: p
-  defp alg_params({:SignatureAlgorithm, _, p}), do: p
+  @doc false
+  def alg_params({:PrivateKeyInfo_privateKeyAlgorithm, _, p}), do: p
+  def alg_params({:AlgorithmIdentifier, _, p}), do: p
+  def alg_params({:PublicKeyAlgorithm, _, p}), do: p
+  def alg_params({:SignatureAlgorithm, _, p}), do: p
 
   # --------------------------------------------------- Cert OTP destructuring --
 
@@ -215,7 +219,8 @@ defmodule Snippy.Decoder do
     DateTime.compare(now, nb) in [:gt, :eq] and DateTime.compare(now, na) in [:lt, :eq]
   end
 
-  defp parse_time({:utcTime, charlist}) do
+  @doc false
+  def parse_time({:utcTime, charlist}) do
     <<yy::binary-2, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2, "Z">> =
       List.to_string(charlist)
 
@@ -228,7 +233,7 @@ defmodule Snippy.Decoder do
     build_dt(yyyy, mm, dd, hh, mi, ss)
   end
 
-  defp parse_time({:generalTime, charlist}) do
+  def parse_time({:generalTime, charlist}) do
     <<yyyy::binary-4, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2, "Z">> =
       List.to_string(charlist)
 
@@ -262,7 +267,8 @@ defmodule Snippy.Decoder do
     |> Enum.uniq()
   end
 
-  defp subject_cn({:rdnSequence, rdn_lists}) do
+  @doc false
+  def subject_cn({:rdnSequence, rdn_lists}) do
     Enum.find_value(rdn_lists, fn attrs ->
       Enum.find_value(attrs, fn
         {:AttributeTypeAndValue, {2, 5, 4, 3}, value} -> string_value(value)
@@ -271,19 +277,21 @@ defmodule Snippy.Decoder do
     end)
   end
 
-  defp subject_cn(_), do: nil
+  def subject_cn(_), do: nil
 
-  defp string_value({:utf8String, v}), do: v
-  defp string_value({:printableString, v}), do: List.to_string(v)
-  defp string_value({:ia5String, v}), do: List.to_string(v)
-  defp string_value(v) when is_list(v), do: List.to_string(v)
-  defp string_value(v) when is_binary(v), do: v
-  defp string_value(_), do: nil
+  @doc false
+  def string_value({:utf8String, v}), do: v
+  def string_value({:printableString, v}), do: List.to_string(v)
+  def string_value({:ia5String, v}), do: List.to_string(v)
+  def string_value(v) when is_list(v), do: List.to_string(v)
+  def string_value(v) when is_binary(v), do: v
+  def string_value(_), do: nil
 
-  defp san_dns_names(:asn1_NOVALUE), do: []
-  defp san_dns_names(nil), do: []
+  @doc false
+  def san_dns_names(:asn1_NOVALUE), do: []
+  def san_dns_names(nil), do: []
 
-  defp san_dns_names(extensions) when is_list(extensions) do
+  def san_dns_names(extensions) when is_list(extensions) do
     Enum.find_value(extensions, [], fn
       {:Extension, {2, 5, 29, 17}, _critical, names} when is_list(names) ->
         for name <- names, dns = dns_name(name), dns != nil, do: dns
@@ -293,9 +301,10 @@ defmodule Snippy.Decoder do
     end)
   end
 
-  defp dns_name({:dNSName, n}) when is_list(n), do: List.to_string(n)
-  defp dns_name({:dNSName, n}) when is_binary(n), do: n
-  defp dns_name(_), do: nil
+  @doc false
+  def dns_name({:dNSName, n}) when is_list(n), do: List.to_string(n)
+  def dns_name({:dNSName, n}) when is_binary(n), do: n
+  def dns_name(_), do: nil
 
   # --------------------------------------------------------- Fingerprints --
 
@@ -339,7 +348,8 @@ defmodule Snippy.Decoder do
     _ -> false
   end
 
-  defp digest_and_signer(%{record: record} = key) do
+  @doc false
+  def digest_and_signer(%{record: record} = key) do
     case key_type(key) do
       :eddsa -> {:none, record}
       _ -> {:sha256, signer_record(record)}
@@ -348,7 +358,8 @@ defmodule Snippy.Decoder do
 
   # OTP's :public_key.sign/3 does not always accept a PKCS#8 PrivateKeyInfo
   # for RSA/EC; convert to traditional form when needed.
-  defp signer_record({:PrivateKeyInfo, _v, alg, octets, _attrs} = original) do
+  @doc false
+  def signer_record({:PrivateKeyInfo, _v, alg, octets, _attrs} = original) do
     case alg_oid(alg) do
       {1, 2, 840, 113_549, 1, 1, 1} -> :public_key.der_decode(:RSAPrivateKey, octets)
       {1, 2, 840, 10_045, 2, 1} -> :public_key.der_decode(:ECPrivateKey, octets)
@@ -356,7 +367,7 @@ defmodule Snippy.Decoder do
     end
   end
 
-  defp signer_record(other), do: other
+  def signer_record(other), do: other
 
   # Reconstruct a public-key value :public_key.verify/4 will accept.
   defp cert_public_key(cert_der) do
@@ -364,17 +375,18 @@ defmodule Snippy.Decoder do
     spki_to_public(spki)
   end
 
-  defp spki_to_public({:OTPSubjectPublicKeyInfo, _alg, {:RSAPublicKey, _, _} = rsa}), do: rsa
+  @doc false
+  def spki_to_public({:OTPSubjectPublicKeyInfo, _alg, {:RSAPublicKey, _, _} = rsa}), do: rsa
 
-  defp spki_to_public({:OTPSubjectPublicKeyInfo, alg, {:ECPoint, _} = point}) do
+  def spki_to_public({:OTPSubjectPublicKeyInfo, alg, {:ECPoint, _} = point}) do
     {point, alg_params(alg)}
   end
 
-  defp spki_to_public({:OTPSubjectPublicKeyInfo, alg, point}) when is_binary(point) do
+  def spki_to_public({:OTPSubjectPublicKeyInfo, alg, point}) when is_binary(point) do
     {{:ECPoint, point}, alg_params(alg)}
   end
 
-  defp spki_to_public({:OTPSubjectPublicKeyInfo, alg, public}) do
+  def spki_to_public({:OTPSubjectPublicKeyInfo, alg, public}) do
     case alg_oid(alg) do
       {1, 3, 101, 112} -> {:ed_pub, :ed25519, public}
       {1, 3, 101, 113} -> {:ed_pub, :ed448, public}
@@ -419,7 +431,8 @@ defmodule Snippy.Decoder do
     end
   end
 
-  defp try_each_root(leaf_der, intermediates, ca_ders) do
+  @doc false
+  def try_each_root(leaf_der, intermediates, ca_ders) do
     chain = intermediates ++ [leaf_der]
 
     Enum.reduce_while(ca_ders, {:error, :no_match}, fn root_der, _acc ->

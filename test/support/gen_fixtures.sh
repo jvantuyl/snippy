@@ -209,6 +209,32 @@ else
   cp ec.pem ed.pem
 fi
 
+# ---- 6.55 Traditional PKCS#1 RSA key (no PKCS#8 wrapper) -------------------
+#
+# A "BEGIN RSA PRIVATE KEY" PEM. Exercises the `{:RSAPrivateKey, _, _}`
+# arm of Snippy.Decoder.find_key_entry/1.
+
+if "$OPENSSL" rsa -in a.key -traditional -out a.traditional.key 2>/dev/null; then
+  :
+else
+  # Some openssl builds drop -traditional; rsa converts to PKCS#8 by
+  # default in 3.x. As a portable fallback emit the traditional header
+  # using genrsa, which always produces an RSAPrivateKey PEM.
+  "$OPENSSL" genrsa -out a.traditional.key 2048 2>/dev/null
+fi
+
+# ---- 6.56 DSA key (best-effort) --------------------------------------------
+#
+# Exercises the `{:DSAPrivateKey, _, _}` arm of find_key_entry/1. Many
+# modern openssl builds disable DSA in their default provider; if any
+# step fails we silently skip and the test guards against it.
+
+if "$OPENSSL" dsaparam -genkey -out dsa.key 2048 2>/dev/null; then
+  :
+else
+  : > dsa.key
+fi
+
 # ---- 6.6 Cert with multi-attribute subject and no SAN ----------------------
 #
 # Exercises the rdnSequence iteration and the subject_cn fallback path

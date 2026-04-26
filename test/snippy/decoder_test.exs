@@ -374,6 +374,363 @@ defmodule Snippy.DecoderTest do
     end
   end
 
+  describe "find_key_entry/1 dispatch" do
+    test "matches traditional PKCS#1 RSA PEM entries", %{fx: fx} do
+      pem = File.read!(fx.paths.a_key_traditional)
+      {:ok, entries} = Decoder.decode_pem(pem)
+      assert {:RSAPrivateKey, der, :not_encrypted} = Decoder.find_key_entry(entries)
+      assert is_binary(der)
+    end
+
+    test "matches an :ECPrivateKey entry directly" do
+      assert {:ECPrivateKey, <<>>, :not_encrypted} =
+               Decoder.find_key_entry([{:ECPrivateKey, <<>>, :not_encrypted}])
+    end
+
+    test "matches a :DSAPrivateKey entry directly" do
+      assert {:DSAPrivateKey, <<>>, :not_encrypted} =
+               Decoder.find_key_entry([{:DSAPrivateKey, <<>>, :not_encrypted}])
+    end
+
+    test "matches a :PrivateKeyInfo entry directly" do
+      assert {:PrivateKeyInfo, <<>>, :not_encrypted} =
+               Decoder.find_key_entry([{:PrivateKeyInfo, <<>>, :not_encrypted}])
+    end
+
+    test "matches an :EncryptedPrivateKeyInfo entry directly" do
+      assert {:EncryptedPrivateKeyInfo, <<>>, :not_encrypted} =
+               Decoder.find_key_entry([{:EncryptedPrivateKeyInfo, <<>>, :not_encrypted}])
+    end
+
+    test "skips non-key entries and returns nil if none match" do
+      assert Decoder.find_key_entry([
+               {:Certificate, <<>>, :not_encrypted},
+               {:DHParameter, <<>>, :not_encrypted}
+             ]) == nil
+    end
+  end
+
+  describe "decode_key/1 traditional RSA" do
+    test "decodes a -----BEGIN RSA PRIVATE KEY----- PEM", %{fx: fx} do
+      pem = File.read!(fx.paths.a_key_traditional)
+      assert {:ok, key} = Decoder.decode_key(pem)
+      assert key.asn1_type == :RSAPrivateKey
+      assert Decoder.key_type(key) == :rsa
+    end
+
+    test "returns :invalid_key when pem_entry_decode raises" do
+      # Build a PEM whose tag matches a key entry but whose DER body is
+      # nonsense. pem_entry_decode/1 will raise; our rescue must convert
+      # that to {:error, :invalid_key}.
+      bogus_pem =
+        "-----BEGIN PRIVATE KEY-----\n" <>
+          Base.encode64("not-a-real-pkcs8-der") <>
+          "\n-----END PRIVATE KEY-----\n"
+
+      assert {:error, :invalid_key} = Decoder.decode_key(bogus_pem)
+    end
+  end
+
+  describe "subject_cn/1" do
+    test "extracts CN from a real cert subject", %{fx: fx} do
+      [der | _] = pem_certs(fx.pem.a_cert)
+      tbs = :public_key.pkix_decode_cert(der, :otp) |> elem(1)
+      subject = elem(tbs, 6)
+
+      assert "a.example.com" = Decoder.subject_cn(subject)
+    end
+
+    test "ignores non-CN attributes (printableString variant)" do
+      # Multi-attribute subject; the *first* RDN is C=US (not CN), so the
+      # `_ -> nil` arm is exercised before we find the CN attribute.
+      subject =
+        {:rdnSequence,
+         [
+           [{:AttributeTypeAndValue, {2, 5, 4, 6}, {:printableString, ~c"US"}}],
+           [{:AttributeTypeAndValue, {2, 5, 4, 10}, {:utf8String, "Example Corp"}}],
+           [{:AttributeTypeAndValue, {2, 5, 4, 3}, {:utf8String, "leaf.example.com"}}]
+         ]}
+
+      assert "leaf.example.com" = Decoder.subject_cn(subject)
+    end
+
+    test "returns nil for non-rdnSequence input" do
+      assert Decoder.subject_cn(:asn1_NOVALUE) == nil
+      assert Decoder.subject_cn(nil) == nil
+    end
+  end
+
+  describe "string_value/1" do
+    test "utf8String returns the binary as-is" do
+      assert Decoder.string_value({:utf8String, "ünìcôde"}) == "ünìcôde"
+    end
+
+    test "printableString converts a charlist to a binary" do
+      assert Decoder.string_value({:printableString, ~c"ASCII Only"}) == "ASCII Only"
+    end
+
+    test "ia5String converts a charlist to a binary" do
+      assert Decoder.string_value({:ia5String, ~c"ascii.example.com"}) == "ascii.example.com"
+    end
+
+    test "raw charlist input is converted to binary" do
+      assert Decoder.string_value(~c"raw-charlist") == "raw-charlist"
+    end
+
+    test "raw binary input is returned as-is" do
+      assert Decoder.string_value("already-a-binary") == "already-a-binary"
+    end
+
+    test "unknown shape returns nil" do
+      assert Decoder.string_value({:unknown_string_type, "x"}) == nil
+      assert Decoder.string_value(42) == nil
+    end
+  end
+
+  describe "san_dns_names/1 / dns_name/1" do
+    test ":asn1_NOVALUE returns []" do
+      assert Decoder.san_dns_names(:asn1_NOVALUE) == []
+    end
+
+    test "nil returns []" do
+      assert Decoder.san_dns_names(nil) == []
+    end
+
+    test "extension list with no SAN extension returns []" do
+      assert Decoder.san_dns_names([
+               {:Extension, {2, 5, 29, 19}, true, "basicConstraints stuff"}
+             ]) == []
+    end
+
+    test "SAN extension extracts only :dNSName entries (charlist + binary)" do
+      sans = [
+        {:dNSName, ~c"charlist.example.com"},
+        {:dNSName, "binary.example.com"},
+        {:iPAddress, <<127, 0, 0, 1>>},
+        {:rfc822Name, ~c"foo@example.com"}
+      ]
+
+      assert Decoder.san_dns_names([{:Extension, {2, 5, 29, 17}, false, sans}]) ==
+               ["charlist.example.com", "binary.example.com"]
+    end
+
+    test "dns_name/1 returns nil for non-:dNSName tuples" do
+      assert Decoder.dns_name({:iPAddress, <<10, 0, 0, 1>>}) == nil
+      assert Decoder.dns_name(:something_else) == nil
+    end
+
+    test "dns_name/1 normalizes :dNSName binaries directly" do
+      assert Decoder.dns_name({:dNSName, "binary-host.example"}) == "binary-host.example"
+    end
+  end
+
+  describe "alg_oid/1 and alg_params/1" do
+    test "PrivateKeyInfo_privateKeyAlgorithm yields oid and params" do
+      alg = {:PrivateKeyInfo_privateKeyAlgorithm, {1, 2, 3}, "params"}
+      assert Decoder.alg_oid(alg) == {1, 2, 3}
+      assert Decoder.alg_params(alg) == "params"
+    end
+
+    test "AlgorithmIdentifier yields oid and params" do
+      alg = {:AlgorithmIdentifier, {1, 2, 4}, "params2"}
+      assert Decoder.alg_oid(alg) == {1, 2, 4}
+      assert Decoder.alg_params(alg) == "params2"
+    end
+
+    test "PublicKeyAlgorithm yields oid and params" do
+      alg = {:PublicKeyAlgorithm, {1, 2, 5}, "params3"}
+      assert Decoder.alg_oid(alg) == {1, 2, 5}
+      assert Decoder.alg_params(alg) == "params3"
+    end
+
+    test "SignatureAlgorithm yields oid and params" do
+      alg = {:SignatureAlgorithm, {1, 2, 6}, "params4"}
+      assert Decoder.alg_oid(alg) == {1, 2, 6}
+      assert Decoder.alg_params(alg) == "params4"
+    end
+  end
+
+  describe "parse_time/1" do
+    test "utcTime YY < 50 maps into the 21st century" do
+      dt = Decoder.parse_time({:utcTime, ~c"250401120000Z"})
+      assert dt.year == 2025
+      assert dt.month == 4
+      assert dt.day == 1
+      assert dt.hour == 12
+    end
+
+    test "utcTime YY >= 50 maps into the 20th century" do
+      dt = Decoder.parse_time({:utcTime, ~c"850615101010Z"})
+      assert dt.year == 1985
+      assert dt.month == 6
+      assert dt.day == 15
+    end
+
+    test "generalTime parses 4-digit year directly" do
+      dt = Decoder.parse_time({:generalTime, ~c"21050102030405Z"})
+      assert dt.year == 2105
+      assert dt.month == 1
+      assert dt.day == 2
+      assert dt.hour == 3
+      assert dt.minute == 4
+      assert dt.second == 5
+    end
+  end
+
+  describe "record_to_type/1 — fallthrough" do
+    test "anonymous record returns :other" do
+      assert Decoder.record_to_type({:Whatever, 1, 2, 3}) == :other
+      assert Decoder.record_to_type(:asn1_NOVALUE) == :other
+      assert Decoder.record_to_type("garbage") == :other
+    end
+  end
+
+  describe "signer_record/1" do
+    test "non-PrivateKeyInfo input is returned unchanged" do
+      record = {:RSAPrivateKey, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+      assert Decoder.signer_record(record) == record
+      assert Decoder.signer_record({:other, 1, 2}) == {:other, 1, 2}
+    end
+
+    test "PrivateKeyInfo with RSA OID re-decodes to :RSAPrivateKey", %{fx: fx} do
+      # Take a real RSA key and wrap it back into a PrivateKeyInfo record
+      # so we exercise the RSA arm of signer_record/1.
+      {:ok, key} = Decoder.decode_key(fx.pem.a_key)
+      rsa_record = key.record
+
+      # Build a PKCS#8 PrivateKeyInfo containing the same RSA bytes.
+      rsa_octets = :public_key.der_encode(:RSAPrivateKey, rsa_record)
+
+      pki =
+        {:PrivateKeyInfo, 0,
+         {:PrivateKeyInfo_privateKeyAlgorithm, {1, 2, 840, 113_549, 1, 1, 1}, :asn1_NOVALUE},
+         rsa_octets, :asn1_NOVALUE}
+
+      out = Decoder.signer_record(pki)
+      assert elem(out, 0) == :RSAPrivateKey
+    end
+
+    test "PrivateKeyInfo with EC OID re-decodes to :ECPrivateKey", %{fx: fx} do
+      {:ok, key} = Decoder.decode_key(fx.pem.ec_key)
+      ec_record = key.record
+
+      ec_octets = :public_key.der_encode(:ECPrivateKey, ec_record)
+
+      pki =
+        {:PrivateKeyInfo, 0,
+         {:PrivateKeyInfo_privateKeyAlgorithm, {1, 2, 840, 10_045, 2, 1}, :asn1_NOVALUE},
+         ec_octets, :asn1_NOVALUE}
+
+      out = Decoder.signer_record(pki)
+      assert elem(out, 0) == :ECPrivateKey
+    end
+
+    test "PrivateKeyInfo with unknown OID is returned unchanged" do
+      pki =
+        {:PrivateKeyInfo, 0,
+         {:PrivateKeyInfo_privateKeyAlgorithm, {1, 2, 9, 9, 9}, :asn1_NOVALUE}, <<>>,
+         :asn1_NOVALUE}
+
+      assert Decoder.signer_record(pki) == pki
+    end
+  end
+
+  describe "spki_to_public/1" do
+    test "RSAPublicKey is returned as-is" do
+      rsa = {:RSAPublicKey, 65_537, 17}
+      alg = {:AlgorithmIdentifier, {1, 2, 840, 113_549, 1, 1, 1}, :asn1_NOVALUE}
+      assert ^rsa = Decoder.spki_to_public({:OTPSubjectPublicKeyInfo, alg, rsa})
+    end
+
+    test ":ECPoint tuple is paired with alg params" do
+      alg = {:AlgorithmIdentifier, {1, 2, 840, 10_045, 2, 1}, "ec-params"}
+      point = {:ECPoint, <<4, 1, 2, 3>>}
+
+      assert {{:ECPoint, <<4, 1, 2, 3>>}, "ec-params"} =
+               Decoder.spki_to_public({:OTPSubjectPublicKeyInfo, alg, point})
+    end
+
+    test "raw binary point gets wrapped in :ECPoint and paired with params" do
+      alg = {:AlgorithmIdentifier, {1, 2, 840, 10_045, 2, 1}, "ec-params"}
+
+      assert {{:ECPoint, <<4, 9, 9, 9>>}, "ec-params"} =
+               Decoder.spki_to_public({:OTPSubjectPublicKeyInfo, alg, <<4, 9, 9, 9>>})
+    end
+
+    test "Ed25519 SPKI (non-binary public) returns :ed_pub :ed25519 + public" do
+      # The is_binary(point) clause precedes this one; force the
+      # final clause by passing a non-binary "public" payload.
+      alg = {:AlgorithmIdentifier, {1, 3, 101, 112}, :asn1_NOVALUE}
+      pubkey = [1, 2, 3, 4]
+
+      assert {:ed_pub, :ed25519, ^pubkey} =
+               Decoder.spki_to_public({:OTPSubjectPublicKeyInfo, alg, pubkey})
+    end
+
+    test "Ed448 SPKI (non-binary public) returns :ed_pub :ed448 + public" do
+      alg = {:AlgorithmIdentifier, {1, 3, 101, 113}, :asn1_NOVALUE}
+      pubkey = [5, 6, 7, 8]
+
+      assert {:ed_pub, :ed448, ^pubkey} =
+               Decoder.spki_to_public({:OTPSubjectPublicKeyInfo, alg, pubkey})
+    end
+
+    test "unknown OID with non-binary public returns the raw public" do
+      alg = {:AlgorithmIdentifier, {1, 2, 9, 9, 9}, :asn1_NOVALUE}
+      raw = [:not, :a, :binary]
+      assert ^raw = Decoder.spki_to_public({:OTPSubjectPublicKeyInfo, alg, raw})
+    end
+  end
+
+  describe "digest_and_signer/1" do
+    test "RSA key uses :sha256 + traditional signer record", %{fx: fx} do
+      {:ok, key} = Decoder.decode_key(fx.pem.a_key)
+      assert {:sha256, signer} = Decoder.digest_and_signer(key)
+      assert is_tuple(signer)
+    end
+
+    test ":eddsa key uses :none digest and the record as-is" do
+      # Synthesize a key map whose key_type/1 returns :eddsa.
+      ed_alg = {:PrivateKeyInfo_privateKeyAlgorithm, {1, 3, 101, 112}, :asn1_NOVALUE}
+      record = {:PrivateKeyInfo, 0, ed_alg, <<>>, :asn1_NOVALUE}
+      key = %{record: record, der: <<>>, asn1_type: :PrivateKeyInfo}
+      assert {:none, ^record} = Decoder.digest_and_signer(key)
+    end
+  end
+
+  describe "try_each_root/3" do
+    test "halts with :ok when one of the candidate roots verifies the chain", %{fx: fx} do
+      [leaf | _] = pem_certs(fx.pem.a_cert)
+      [ca | _] = pem_certs(fx.pem.ca_cert)
+
+      # Drop a couple of unrelated DERs in front of the real CA so
+      # reduce_while actually iterates and finds the match.
+      [other | _] = pem_certs(fx.pem.b_cert)
+      assert :ok = Decoder.try_each_root(leaf, [], [other, ca])
+    end
+
+    test "returns {:error, :no_match} when no root verifies the chain", %{fx: fx} do
+      [leaf | _] = pem_certs(fx.pem.a_cert)
+      [other | _] = pem_certs(fx.pem.b_cert)
+      assert {:error, :no_match} = Decoder.try_each_root(leaf, [], [other])
+    end
+
+    test "swallows pkix exceptions and reports :no_match", %{fx: fx} do
+      [leaf | _] = pem_certs(fx.pem.a_cert)
+      # Garbage CA der makes pkix_path_validation raise; the rescue
+      # arm in try_each_root must catch it.
+      assert {:error, :no_match} = Decoder.try_each_root(leaf, [], [<<0, 1, 2>>])
+    end
+  end
+
+  describe "decode_encrypted_key/2 — both passwords fail" do
+    test "returns :bad_password when neither trim nor literal pw work" do
+      pem = encrypted_key_pem("expected\n")
+      # Provide a *wrong* password whose trimmed form differs from itself.
+      assert {:error, :bad_password} = Decoder.decode_key(pem, "wrong\n")
+    end
+  end
+
   defp pem_certs(pem) do
     {:ok, ders} = Decoder.decode_certs(pem)
     ders

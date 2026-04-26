@@ -32,6 +32,8 @@ defmodule Snippy.TestFixtures do
       nosan_cert: Path.join(dir, "nosan.pem"),
       nosan_key: Path.join(dir, "nosan.key"),
       b_key_enc_legacy: Path.join(dir, "b.enc.legacy.key"),
+      a_key_traditional: Path.join(dir, "a.traditional.key"),
+      dsa_key: Path.join(dir, "dsa.key"),
       expired_cert: Path.join(dir, "expired.pem"),
       expired_key: Path.join(dir, "expired.key"),
       future_cert: Path.join(dir, "future.pem"),
