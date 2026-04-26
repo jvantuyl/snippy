@@ -16,11 +16,11 @@ concurrency:
 jobs:
   test:
     name: Test & Coverage
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, snippy]
     env:
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -29,7 +29,7 @@ jobs:
           version-type: strict
 
       - name: Cache build & deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             deps
@@ -56,7 +56,7 @@ jobs:
         run: mix coveralls.html
 
       - name: Upload coverage HTML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-html
           path: cover/
@@ -66,7 +66,7 @@ jobs:
     name: Build & Deploy GitHub Pages
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, snippy]
     permissions:
       contents: read
       pages: write
@@ -75,7 +75,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -84,7 +84,7 @@ jobs:
           version-type: strict
 
       - name: Cache build & deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             deps
@@ -129,15 +129,15 @@ jobs:
           HTML
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
         with:
           enablement: true
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
