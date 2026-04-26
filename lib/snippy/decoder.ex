@@ -419,15 +419,19 @@ defmodule Snippy.Decoder do
 
   def validate_against_castore(leaf_der, intermediates \\ []) do
     if Code.ensure_loaded?(CAStore) and function_exported?(CAStore, :file_path, 0) do
-      with {:ok, pem} <- File.read(CAStore.file_path()),
-           {:ok, ca_entries} <- decode_pem(pem) do
-        ca_ders = for {:Certificate, der, :not_encrypted} <- ca_entries, do: der
-        try_each_root(leaf_der, intermediates, ca_ders)
-      else
-        {:error, reason} -> {:error, {:castore, reason}}
-      end
+      validate_with_castore(leaf_der, intermediates)
     else
       {:error, :castore_not_available}
+    end
+  end
+
+  defp validate_with_castore(leaf_der, intermediates) do
+    with {:ok, pem} <- File.read(CAStore.file_path()),
+         {:ok, ca_entries} <- decode_pem(pem) do
+      ca_ders = for {:Certificate, der, :not_encrypted} <- ca_entries, do: der
+      try_each_root(leaf_der, intermediates, ca_ders)
+    else
+      {:error, reason} -> {:error, {:castore, reason}}
     end
   end
 

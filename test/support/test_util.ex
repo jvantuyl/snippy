@@ -27,8 +27,13 @@ defmodule Snippy.TestUtil do
       if System.get_env("LOUD") do
         unquote(body)
       else
-        capture_io(fn -> capture_log(fn -> unquote(body) end) end)
+        Snippy.TestUtil.silence(fn -> unquote(body) end)
       end
     end
+  end
+
+  @doc false
+  def silence(fun) when is_function(fun, 0) do
+    capture_io(fn -> capture_log(fun) end)
   end
 end

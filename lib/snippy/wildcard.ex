@@ -63,24 +63,17 @@ defmodule Snippy.Wildcard do
   label in the host. No mid-label or multi-label wildcards.
   """
   def match?(pattern, host) do
-    {host_kind, host_labels} = parse(host)
-
-    if host_kind == :wild do
-      # Wildcards on the client/host side don't really make sense; treat as no match.
-      false
-    else
-      case parse(pattern) do
-        {:exact, pat_labels} ->
-          pat_labels == host_labels
-
-        {:wild, pat_labels} ->
-          case host_labels do
-            [_first | rest] -> rest == pat_labels
-            [] -> false
-          end
-      end
+    case parse(host) do
+      # Wildcards on the client/host side don't really make sense; treat
+      # as no match.
+      {:wild, _} -> false
+      {:exact, host_labels} -> match_pattern?(parse(pattern), host_labels)
     end
   end
+
+  defp match_pattern?({:exact, pat_labels}, host_labels), do: pat_labels == host_labels
+  defp match_pattern?({:wild, _pat_labels}, []), do: false
+  defp match_pattern?({:wild, pat_labels}, [_first | rest]), do: rest == pat_labels
 
   @doc """
   Returns true if `pattern` is a wildcard pattern.

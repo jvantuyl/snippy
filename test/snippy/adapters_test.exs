@@ -16,9 +16,6 @@ defmodule Snippy.AdaptersTest do
 
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureIO
-  import ExUnit.CaptureLog
-
   alias Snippy.Decoder
   alias Snippy.TestFixtures
 
@@ -39,23 +36,24 @@ defmodule Snippy.AdaptersTest do
 
   defp quiet_discover(env) do
     if System.get_env("LOUD") do
-      {:ok, d} = Snippy.discover_certificates(prefix: "ADP", env: env)
-      d
+      do_discover(env)
     else
       ref = make_ref()
       parent = self()
 
-      capture_io(fn ->
-        capture_log(fn ->
-          {:ok, d} = Snippy.discover_certificates(prefix: "ADP", env: env)
-          send(parent, {ref, d})
-        end)
+      Snippy.TestUtil.silence(fn ->
+        send(parent, {ref, do_discover(env)})
       end)
 
       receive do
         {^ref, d} -> d
       end
     end
+  end
+
+  defp do_discover(env) do
+    {:ok, d} = Snippy.discover_certificates(prefix: "ADP", env: env)
+    d
   end
 
   describe "Plug.Cowboy" do

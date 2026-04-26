@@ -74,7 +74,8 @@ defmodule Snippy.MixProject do
 
   defp aliases do
     [
-      ci: ["coveralls", "credo --strict"]
+      lint: ["format --check-formatted", "compile --warnings-as-errors", "credo --strict"],
+      ci: ["lint", "coveralls"]
     ]
   end
 

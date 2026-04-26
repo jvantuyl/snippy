@@ -136,32 +136,39 @@ defmodule Snippy.Discovery do
 
     cond do
       prefix == "" ->
-        # No prefix: the "key" is everything before the suffix.
-        body_len = byte_size(var_search) - byte_size(suffix)
-
-        if body_len > 0 do
-          key = binary_part(var_search, 0, body_len) |> String.trim_leading("_")
-
-          if key != "" do
-            Map.merge(entry, %{prefix: "", key: key})
-          end
-        end
+        peel_no_prefix(entry, var_search, suffix)
 
       String.starts_with?(var_search, prefix <> "_") and
           String.ends_with?(var_search, suffix) ->
-        body_start = byte_size(prefix) + 1
-        body_len = byte_size(var_search) - body_start - byte_size(suffix)
-
-        if body_len > 0 do
-          key = binary_part(var_search, body_start, body_len)
-
-          if key != "" do
-            Map.merge(entry, %{prefix: prefix, key: key})
-          end
-        end
+        peel_with_prefix(entry, var_search, prefix, suffix)
 
       true ->
         nil
+    end
+  end
+
+  defp peel_no_prefix(entry, var_search, suffix) do
+    body_len = byte_size(var_search) - byte_size(suffix)
+
+    with true <- body_len > 0,
+         key = binary_part(var_search, 0, body_len) |> String.trim_leading("_"),
+         true <- key != "" do
+      Map.merge(entry, %{prefix: "", key: key})
+    else
+      _ -> nil
+    end
+  end
+
+  defp peel_with_prefix(entry, var_search, prefix, suffix) do
+    body_start = byte_size(prefix) + 1
+    body_len = byte_size(var_search) - body_start - byte_size(suffix)
+
+    with true <- body_len > 0,
+         key = binary_part(var_search, body_start, body_len),
+         true <- key != "" do
+      Map.merge(entry, %{prefix: prefix, key: key})
+    else
+      _ -> nil
     end
   end
 
@@ -236,9 +243,8 @@ defmodule Snippy.Discovery do
     if public_ca == :always and not castore_available?() do
       {:error, :castore_required_for_always_validation}
     else
-      with {:ok, prepared} <- materialize_prepare(raw_group),
-           {:ok, group} <- validate_group(prepared, grace, public_ca) do
-        {:ok, group}
+      with {:ok, prepared} <- materialize_prepare(raw_group) do
+        validate_group(prepared, grace, public_ca)
       end
     end
   end
@@ -426,22 +432,20 @@ defmodule Snippy.Discovery do
     Decoder.decode_certs_file(path)
   end
 
+  defp validate_chain_or_castore(leaf, [], public_ca, label) do
+    try_public_ca(leaf, [], public_ca, label)
+  end
+
   defp validate_chain_or_castore(leaf, intermediates, public_ca, label) do
-    cond do
-      intermediates != [] ->
-        case Decoder.validate_chain(leaf, intermediates) do
-          :ok ->
-            {:ok_chain, nil}
+    case Decoder.validate_chain(leaf, intermediates) do
+      :ok ->
+        {:ok_chain, nil}
 
-          {:error, reason} ->
-            Logger.warning(
-              "snippy: #{label}: chain validation against provided CA failed: #{inspect(reason)}"
-            )
+      {:error, reason} ->
+        Logger.warning(
+          "snippy: #{label}: chain validation against provided CA failed: #{inspect(reason)}"
+        )
 
-            try_public_ca(leaf, intermediates, public_ca, label)
-        end
-
-      true ->
         try_public_ca(leaf, intermediates, public_ca, label)
     end
   end
@@ -453,27 +457,30 @@ defmodule Snippy.Discovery do
         {:ok_self, nil}
 
       castore_available?() ->
-        case Decoder.validate_against_castore(leaf, intermediates) do
-          :ok ->
-            Logger.info("snippy: #{label}: validated against public CA bundle")
-            {:ok_public, nil}
-
-          {:error, reason} ->
-            if mode == :always do
-              {:error_chain, reason}
-            else
-              Logger.warning(
-                "snippy: #{label}: public CA validation failed: #{inspect(reason)}; accepting"
-              )
-
-              log_self_signed(label)
-              {:ok_self, reason}
-            end
-        end
+        validate_against_castore(leaf, intermediates, mode, label)
 
       true ->
         log_self_signed(label)
         {:ok_self, nil}
+    end
+  end
+
+  defp validate_against_castore(leaf, intermediates, mode, label) do
+    case Decoder.validate_against_castore(leaf, intermediates) do
+      :ok ->
+        Logger.info("snippy: #{label}: validated against public CA bundle")
+        {:ok_public, nil}
+
+      {:error, reason} when mode == :always ->
+        {:error_chain, reason}
+
+      {:error, reason} ->
+        Logger.warning(
+          "snippy: #{label}: public CA validation failed: #{inspect(reason)}; accepting"
+        )
+
+        log_self_signed(label)
+        {:ok_self, reason}
     end
   end
 
@@ -521,21 +528,17 @@ defmodule Snippy.Discovery do
     full_chain = cert_ders ++ ca_ders
 
     base =
-      cond do
-        g.cert_kind == :file and ca_ders == [] ->
-          %{certfile: g.cert_val}
-
-        true ->
-          %{cert: full_chain}
+      if g.cert_kind == :file and ca_ders == [] do
+        %{certfile: g.cert_val}
+      else
+        %{cert: full_chain}
       end
 
     base =
-      cond do
-        g.key_kind == :file and ca_ders == [] ->
-          Map.put(base, :keyfile, g.key_val)
-
-        true ->
-          Map.put(base, :key, ssl_key_form(key))
+      if g.key_kind == :file and ca_ders == [] do
+        Map.put(base, :keyfile, g.key_val)
+      else
+        Map.put(base, :key, ssl_key_form(key))
       end
 
     case g.password_str do

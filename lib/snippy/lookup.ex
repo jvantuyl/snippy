@@ -125,30 +125,35 @@ defmodule Snippy.Lookup do
   # ------------------------------------------------------- Host resolution
 
   defp entries_for_host(groups, host_norm) do
-    exact =
-      Enum.filter(groups, fn g ->
-        Enum.any?(g.hostnames, fn pat ->
-          case Wildcard.parse(pat) do
-            {:exact, labels} -> Enum.join(labels, ".") == host_norm
-            _ -> false
-          end
-        end)
-      end)
+    case Enum.filter(groups, &group_matches_exact?(&1, host_norm)) do
+      [] ->
+        tail = host_norm |> String.split(".") |> tl()
+        Enum.filter(groups, &group_matches_wild?(&1, tail))
 
-    if exact != [] do
-      exact
-    else
-      host_labels = String.split(host_norm, ".")
-      tail = tl(host_labels || [])
+      exact ->
+        exact
+    end
+  end
 
-      Enum.filter(groups, fn g ->
-        Enum.any?(g.hostnames, fn pat ->
-          case Wildcard.parse(pat) do
-            {:wild, labels} -> labels == tail
-            _ -> false
-          end
-        end)
-      end)
+  defp group_matches_exact?(%Group{hostnames: hostnames}, host_norm) do
+    Enum.any?(hostnames, &exact_pattern_matches?(&1, host_norm))
+  end
+
+  defp exact_pattern_matches?(pat, host_norm) do
+    case Wildcard.parse(pat) do
+      {:exact, labels} -> Enum.join(labels, ".") == host_norm
+      _ -> false
+    end
+  end
+
+  defp group_matches_wild?(%Group{hostnames: hostnames}, tail) do
+    Enum.any?(hostnames, &wild_pattern_matches?(&1, tail))
+  end
+
+  defp wild_pattern_matches?(pat, tail) do
+    case Wildcard.parse(pat) do
+      {:wild, labels} -> labels == tail
+      _ -> false
     end
   end
 
