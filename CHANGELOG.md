@@ -1,8 +1,15 @@
 # Changelog
 
-## 0.8.2
+## 0.8.3
 
 First release published to Hex.
+
+Documentation-only fix: configure `ex_doc` to skip undefined-reference
+warnings on `CHANGELOG.md` so its narrative mentions of internal
+`@moduledoc false` modules (e.g. `Snippy.Store`) don't trigger build
+warnings. No code changes.
+
+## 0.8.2 (unreleased)
 
 ### Breaking changes
 

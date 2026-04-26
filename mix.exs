@@ -1,7 +1,7 @@
 defmodule Snippy.MixProject do
   use Mix.Project
 
-  @version "0.8.2"
+  @version "0.8.3"
 
   def project do
     [
@@ -68,7 +68,12 @@ defmodule Snippy.MixProject do
         "LICENSE.md": [title: "License"]
       ],
       authors: ["Jayson Vantuyl"],
-      source_ref: "v#{@version}"
+      source_ref: "v#{@version}",
+      # CHANGELOG.md references internal modules (e.g. Snippy.Store) by
+      # name as part of describing implementation history. Those modules
+      # are intentionally @moduledoc false; suppress the autolink
+      # warnings on the changelog file specifically.
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"]
     ]
   end
 
