@@ -523,6 +523,83 @@ defmodule Snippy.StoreTest do
     end
   end
 
+  describe "local fallback when infrastructure is unavailable" do
+    # Simulates the runtime.exs scenario: the ETS table appears absent
+    # so helpers fall back to in-process discovery. We use TableOwner's
+    # test rename to hide the table while keeping the app running.
+
+    setup %{fx: fx} do
+      Snippy.TableOwner.__test_hide_table__()
+
+      on_exit(fn ->
+        Snippy.TableOwner.__test_restore_table__()
+      end)
+
+      %{fx: fx}
+    end
+
+    test "lookup_groups/2 returns groups via local fallback", %{fx: fx} do
+      quiet do
+        put_env("LF_M_CRT", fx.pem.a_cert)
+        put_env("LF_M_KEY", fx.pem.a_key)
+
+        groups = Store.lookup_groups(["LF"], [])
+        assert [g] = groups
+        assert g.prefix == "LF"
+        assert g.key == "M"
+        assert is_map(g.ssl_payload)
+      end
+    end
+
+    test "lookup_groups/2 drops broken groups in local fallback", %{fx: fx} do
+      put_env("LFE_GOOD_CRT", fx.pem.a_cert)
+      put_env("LFE_GOOD_KEY", fx.pem.a_key)
+      put_env("LFE_BAD_CRT", "not pem")
+      put_env("LFE_BAD_KEY", "still not pem")
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        groups = Store.lookup_groups(["LFE"], [])
+        keys = Enum.map(groups, & &1.key) |> Enum.sort()
+        assert keys == ["GOOD"]
+      end)
+    end
+
+    test "discover/1 without :env falls back to isolated path", %{fx: fx} do
+      quiet do
+        put_env("LFD_M_CRT", fx.pem.a_cert)
+        put_env("LFD_M_KEY", fx.pem.a_key)
+
+        {:ok, disc} = Store.discover(prefix: "LFD")
+        assert [g] = disc.groups
+        assert g.prefix == "LFD"
+        assert is_map(g.ssl_payload)
+      end
+    end
+
+    test "Snippy.ssl_opts/1 works without running application", %{fx: fx} do
+      quiet do
+        put_env("LFS_M_CRT", fx.pem.a_cert)
+        put_env("LFS_M_KEY", fx.pem.a_key)
+
+        opts = Snippy.ssl_opts(prefix: "LFS")
+        assert is_list(opts[:certs_keys])
+        assert opts[:certs_keys] != []
+      end
+    end
+
+    test "Snippy.phx_endpoint_config/1 works without running application", %{fx: fx} do
+      quiet do
+        put_env("LFP_M_CRT", fx.pem.a_cert)
+        put_env("LFP_M_KEY", fx.pem.a_key)
+
+        opts = Snippy.phx_endpoint_config(prefix: "LFP", port: 4443)
+        assert is_list(opts[:certs_keys])
+        assert opts[:certs_keys] != []
+        assert opts[:port] == 4443
+      end
+    end
+  end
+
   # ---------- helpers ----------
 
   defp put_env(name, value) do
@@ -549,7 +626,7 @@ defmodule Snippy.StoreTest do
 
   # Test variables we set all start with one of these prefixes; ignore
   # anything else so we don't clobber developer environment.
-  @test_prefixes ~w(STA STB STC STD STE STF STG STH STI STJ STK STL STM STN STO STP STQ STR STS STT STU)
+  @test_prefixes ~w(STA STB STC STD STE STF STG STH STI STJ STK STL STM STN STO STP STQ STR STS STT STU LF LFD LFE LFS LFP)
 
   defp snippy_test_var?(name) do
     Enum.any?(@test_prefixes, fn pfx -> String.starts_with?(name, pfx <> "_") end)

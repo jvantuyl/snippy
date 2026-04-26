@@ -71,10 +71,20 @@ defmodule Snippy.Store do
     Application.get_env(:snippy, :scan_timeout_ms, @scan_timeout_ms) + 5_000
   end
 
+  defp infrastructure_available? do
+    :ets.whereis(@table) != :undefined
+  end
+
   defp current_scan do
-    case :ets.lookup(@table, :scan_meta) do
-      [{:scan_meta, meta}] -> {:ok, meta}
-      [] -> :missing
+    case :ets.whereis(@table) do
+      :undefined ->
+        :missing
+
+      _tid ->
+        case :ets.lookup(@table, :scan_meta) do
+          [{:scan_meta, meta}] -> {:ok, meta}
+          [] -> :missing
+        end
     end
   end
 
@@ -84,14 +94,38 @@ defmodule Snippy.Store do
   Errors are silently dropped (they were logged at materialization time).
   """
   def lookup_groups(prefixes, opts \\ []) when is_list(prefixes) do
+    if infrastructure_available?() do
+      shared_lookup_groups(prefixes, opts)
+    else
+      local_lookup_groups(prefixes, opts)
+    end
+  end
+
+  defp shared_lookup_groups(prefixes, opts) do
     :ok = ensure_scanned(opts)
 
     case_sensitive = Keyword.get(opts, :case_sensitive, true)
-
     raw_groups = collect_raw_groups(prefixes, case_sensitive)
 
     Enum.flat_map(raw_groups, fn raw ->
       case fetch_or_materialize(raw, opts) do
+        {:ok, group} -> [group]
+        {:error, _reason} -> []
+      end
+    end)
+  end
+
+  defp local_lookup_groups(prefixes, opts) do
+    case_sensitive = Keyword.get(opts, :case_sensitive, true)
+
+    raw_groups =
+      opts
+      |> Discovery.scan_all()
+      |> Discovery.filter_by_prefixes(prefixes, case_sensitive)
+      |> Discovery.group_entries()
+
+    Enum.flat_map(raw_groups, fn raw ->
+      case Discovery.materialize_group(raw, opts) do
         {:ok, group} -> [group]
         {:error, _reason} -> []
       end
@@ -147,10 +181,10 @@ defmodule Snippy.Store do
     Snippy.OTPCheck.check!()
     prefixes = Discovery.normalize_prefixes!(opts[:prefix])
 
-    if Keyword.has_key?(opts, :env) do
-      isolated_discover(prefixes, opts)
-    else
-      shared_discover(prefixes, opts)
+    cond do
+      Keyword.has_key?(opts, :env) -> isolated_discover(prefixes, opts)
+      not infrastructure_available?() -> isolated_discover(prefixes, opts)
+      true -> shared_discover(prefixes, opts)
     end
   end
 
@@ -249,10 +283,8 @@ defmodule Snippy.Store do
           materialize_call_timeout()
         )
 
-        case :ets.lookup(@table, key) do
-          [{_, cached}] -> cached
-          [] -> {:error, :materialize_missing}
-        end
+        [{_, cached}] = :ets.lookup(@table, key)
+        cached
     end
   end
 

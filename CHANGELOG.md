@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.9.0
+
+### Fixes
+
+- **Helpers now work from `config/runtime.exs` before the Snippy
+  application starts.** Previously, calling `Snippy.phx_endpoint_config/1`,
+  `Snippy.ssl_opts/1`, or any other helper before the supervision tree
+  was running would crash with an `ArgumentError` on the missing
+  `:snippy_certs` ETS table. Snippy now detects when its infrastructure
+  is unavailable and transparently falls back to in-process discovery
+  (scan + materialize without GenServer or ETS). No code changes
+  required on the caller side.
+
+### New features
+
+- **`phx_endpoint_config/1` supports Bandit via `:adapter` option.**
+  Pass `adapter: :bandit` to nest SSL options under
+  `thousand_island_options: [transport_options: [...]]` as Bandit
+  requires. Defaults to `:cowboy` (flat merge, existing behavior).
+
+### Internals
+
+- `Snippy.Store.lookup_groups/2` and `Snippy.Store.discover/1` route
+  through a local fallback path when the ETS table has not been created
+  yet, reusing the existing `Discovery.scan_all/1` and
+  `Discovery.materialize_group/2` pipeline.
+- `Snippy.Store.current_scan/0` guards against a missing ETS table via
+  `:ets.whereis/1`.
+- Removed a defensive `{:error, :materialize_missing}` branch in
+  `fetch_or_materialize/2`; a missing row after a GenServer materialize
+  call now crashes immediately (let-it-crash).
+- `Snippy.TableOwner` gained test-only `__test_hide_table__/0` and
+  `__test_restore_table__/0` helpers for simulating a missing table
+  without stopping the application.
+- 213 tests + 9 properties, 99.6% line coverage.
+
 ## 0.8.3
 
 First release published to Hex.

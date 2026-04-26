@@ -184,9 +184,19 @@ defmodule Snippy do
   Discovery passthrough opts (`:prefix`, `:case_sensitive`, ...) are
   consumed for discovery and stripped from the result.
 
-  ## Example
+  ## Adapter
 
-      # config/runtime.exs
+  Pass `:adapter` to control how SSL options are nested in the result:
+
+    * `:cowboy` (default) — SSL options are merged flat, suitable for
+      `Phoenix.Endpoint.Cowboy2Adapter`.
+    * `:bandit` — SSL options are nested under
+      `thousand_island_options: [transport_options: [...]]`, as
+      required by `Bandit.PhoenixAdapter`.
+
+  ## Examples
+
+      # Cowboy (default)
       config :my_app, MyAppWeb.Endpoint,
         https:
           Snippy.phx_endpoint_config(
@@ -194,16 +204,39 @@ defmodule Snippy do
             port: 4443,
             cipher_suite: :strong
           )
+
+      # Bandit
+      config :my_app, MyAppWeb.Endpoint,
+        https:
+          Snippy.phx_endpoint_config(
+            prefix: "MYAPP",
+            adapter: :bandit,
+            port: 4443
+          )
   """
   @spec phx_endpoint_config(keyword()) :: keyword()
   def phx_endpoint_config(opts \\ []) do
     {snippy_opts, transport_opts} = split_snippy_opts(opts)
-    Keyword.merge(transport_opts, ssl_opts(snippy_opts))
+    adapter = Keyword.get(snippy_opts, :adapter, :cowboy)
+    ssl = ssl_opts(snippy_opts)
+
+    case adapter do
+      :bandit ->
+        existing_ti = Keyword.get(transport_opts, :thousand_island_options, [])
+        existing_to = Keyword.get(existing_ti, :transport_options, [])
+        merged_to = Keyword.merge(existing_to, ssl)
+        merged_ti = Keyword.put(existing_ti, :transport_options, merged_to)
+        transport_opts |> Keyword.put(:thousand_island_options, merged_ti)
+
+      _cowboy ->
+        Keyword.merge(transport_opts, ssl)
+    end
   end
 
   # --------------------------------------------------------- Internals ---
 
   @snippy_opt_keys [
+    :adapter,
     :prefix,
     :case_sensitive,
     :env,

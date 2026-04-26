@@ -420,6 +420,8 @@ defmodule Snippy.Discovery do
       true ->
         :ok
     end
+  rescue
+    ArgumentError -> :ok
   end
 
   defp load_ca_chain(%{ca: nil}), do: {:ok, []}

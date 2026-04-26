@@ -361,6 +361,77 @@ defmodule SnippyTest do
     end
   end
 
+  describe "phx_endpoint_config/1 adapter: :bandit" do
+    test "nests SSL opts under thousand_island_options: [transport_options: ...]", %{fx: fx} do
+      quiet do
+        env = %{
+          "APP_MAIN_CRT" => fx.pem.a_cert,
+          "APP_MAIN_KEY" => fx.pem.a_key
+        }
+
+        opts =
+          Snippy.phx_endpoint_config(
+            prefix: "APP",
+            env: env,
+            adapter: :bandit,
+            port: 4443
+          )
+
+        assert opts[:port] == 4443
+        refute Keyword.has_key?(opts, :sni_fun)
+        refute Keyword.has_key?(opts, :certs_keys)
+
+        ti = opts[:thousand_island_options]
+        assert is_list(ti)
+        to = ti[:transport_options]
+        assert is_list(to)
+        assert is_function(to[:sni_fun], 1)
+        assert is_list(to[:certs_keys])
+      end
+    end
+
+    test ":adapter is stripped from the result", %{fx: fx} do
+      quiet do
+        env = %{
+          "APP_MAIN_CRT" => fx.pem.a_cert,
+          "APP_MAIN_KEY" => fx.pem.a_key
+        }
+
+        opts =
+          Snippy.phx_endpoint_config(
+            prefix: "APP",
+            env: env,
+            adapter: :bandit,
+            port: 4443
+          )
+
+        refute Keyword.has_key?(opts, :adapter)
+      end
+    end
+
+    test "merges with existing thousand_island_options from caller", %{fx: fx} do
+      quiet do
+        env = %{
+          "APP_MAIN_CRT" => fx.pem.a_cert,
+          "APP_MAIN_KEY" => fx.pem.a_key
+        }
+
+        opts =
+          Snippy.phx_endpoint_config(
+            prefix: "APP",
+            env: env,
+            adapter: :bandit,
+            port: 4443,
+            thousand_island_options: [num_acceptors: 10]
+          )
+
+        ti = opts[:thousand_island_options]
+        assert ti[:num_acceptors] == 10
+        assert is_list(ti[:transport_options])
+      end
+    end
+  end
+
   describe ":discovered_certs escape hatch" do
     test "helpers accept a pre-built %Discovery{} and skip the shared Store", %{fx: fx} do
       quiet do

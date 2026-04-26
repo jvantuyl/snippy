@@ -16,6 +16,16 @@ defmodule Snippy.TableOwner do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
+  @doc false
+  def __test_hide_table__ do
+    GenServer.call(__MODULE__, :__test_hide_table__)
+  end
+
+  @doc false
+  def __test_restore_table__ do
+    GenServer.call(__MODULE__, :__test_restore_table__)
+  end
+
   @impl true
   def init([]) do
     _ =
@@ -27,6 +37,18 @@ defmodule Snippy.TableOwner do
       ])
 
     Logger.debug("snippy: created ETS table #{inspect(@table)}")
-    {:ok, %{table: @table}}
+    {:ok, %{table: @table, hidden_tid: nil}}
+  end
+
+  @impl true
+  def handle_call(:__test_hide_table__, _from, state) do
+    tid = :ets.rename(@table, :snippy_certs_hidden)
+    {:reply, :ok, %{state | hidden_tid: tid}}
+  end
+
+  @impl true
+  def handle_call(:__test_restore_table__, _from, state) do
+    :ets.rename(:snippy_certs_hidden, @table)
+    {:reply, :ok, %{state | hidden_tid: nil}}
   end
 end
