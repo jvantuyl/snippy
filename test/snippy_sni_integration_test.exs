@@ -9,6 +9,8 @@ defmodule SnippySniIntegrationTest do
 
   use ExUnit.Case, async: false
 
+  import Snippy.TestUtil
+
   alias Snippy.Decoder
   alias Snippy.TestFixtures
 
@@ -20,68 +22,70 @@ defmodule SnippySniIntegrationTest do
 
   test "SNI selects a.example.com, b.example.com, wildcard, and falls back",
        %{fx: fx} do
-    env = %{
-      "APP_A_CRT" => fx.pem.a_cert,
-      "APP_A_KEY" => fx.pem.a_key,
-      "APP_B_CRT" => fx.pem.b_cert,
-      "APP_B_KEY" => fx.pem.b_key,
-      "APP_WILD_CRT" => fx.pem.wild_cert,
-      "APP_WILD_KEY" => fx.pem.wild_key
-    }
+    quiet do
+      env = %{
+        "APP_A_CRT" => fx.pem.a_cert,
+        "APP_A_KEY" => fx.pem.a_key,
+        "APP_B_CRT" => fx.pem.b_cert,
+        "APP_B_KEY" => fx.pem.b_key,
+        "APP_WILD_CRT" => fx.pem.wild_cert,
+        "APP_WILD_KEY" => fx.pem.wild_key
+      }
 
-    ssl_opts = Snippy.ssl_opts(prefix: "APP", env: env, default_hostname: "a.example.com")
+      ssl_opts = Snippy.ssl_opts(prefix: "APP", env: env, default_hostname: "a.example.com")
 
-    listen_opts =
-      ssl_opts
-      |> Keyword.merge(
-        active: false,
-        reuseaddr: true,
-        verify: :verify_none
-      )
+      listen_opts =
+        ssl_opts
+        |> Keyword.merge(
+          active: false,
+          reuseaddr: true,
+          verify: :verify_none
+        )
 
-    {:ok, listen_socket} = :ssl.listen(0, listen_opts)
-    {:ok, {_addr, port}} = :ssl.sockname(listen_socket)
+      {:ok, listen_socket} = :ssl.listen(0, listen_opts)
+      {:ok, {_addr, port}} = :ssl.sockname(listen_socket)
 
-    parent = self()
+      parent = self()
 
-    server_loop = fn loop ->
-      case :ssl.transport_accept(listen_socket) do
-        {:ok, transport} ->
-          case :ssl.handshake(transport, 5_000) do
-            {:ok, _socket} ->
-              :ok
+      server_loop = fn loop ->
+        case :ssl.transport_accept(listen_socket) do
+          {:ok, transport} ->
+            case :ssl.handshake(transport, 5_000) do
+              {:ok, _socket} ->
+                :ok
 
-            {:error, reason} ->
-              send(parent, {:server_error, reason})
-          end
+              {:error, reason} ->
+                send(parent, {:server_error, reason})
+            end
 
-          loop.(loop)
+            loop.(loop)
 
-        {:error, :closed} ->
-          :ok
+          {:error, :closed} ->
+            :ok
+        end
       end
+
+      server = spawn_link(fn -> server_loop.(server_loop) end)
+
+      on_exit(fn ->
+        :ssl.close(listen_socket)
+        Process.exit(server, :kill)
+      end)
+
+      # ----- 1. exact match for "a.example.com" -----
+      assert "a.example.com" == leaf_cn_for_sni(port, "a.example.com")
+
+      # ----- 2. exact match for "b.example.com" -----
+      assert "b.example.com" == leaf_cn_for_sni(port, "b.example.com")
+
+      # ----- 3. wildcard match for "*.wild.example.com" -----
+      # The wildcard cert advertises SAN=*.wild.example.com; SNI for any
+      # immediate child label should pick it.
+      assert "*.wild.example.com" == leaf_cn_for_sni(port, "host.wild.example.com")
+
+      # ----- 4. unknown SNI falls back to default_hostname (a.example.com) -----
+      assert "a.example.com" == leaf_cn_for_sni(port, "no-such-host.example.org")
     end
-
-    server = spawn_link(fn -> server_loop.(server_loop) end)
-
-    on_exit(fn ->
-      :ssl.close(listen_socket)
-      Process.exit(server, :kill)
-    end)
-
-    # ----- 1. exact match for "a.example.com" -----
-    assert "a.example.com" == leaf_cn_for_sni(port, "a.example.com")
-
-    # ----- 2. exact match for "b.example.com" -----
-    assert "b.example.com" == leaf_cn_for_sni(port, "b.example.com")
-
-    # ----- 3. wildcard match for "*.wild.example.com" -----
-    # The wildcard cert advertises SAN=*.wild.example.com; SNI for any
-    # immediate child label should pick it.
-    assert "*.wild.example.com" == leaf_cn_for_sni(port, "host.wild.example.com")
-
-    # ----- 4. unknown SNI falls back to default_hostname (a.example.com) -----
-    assert "a.example.com" == leaf_cn_for_sni(port, "no-such-host.example.org")
   end
 
   defp leaf_cn_for_sni(port, sni_host) do

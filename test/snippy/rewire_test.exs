@@ -8,6 +8,7 @@ defmodule Snippy.RewireTest do
 
   use ExUnit.Case, async: false
   import Rewire
+  import Snippy.TestUtil
 
   alias Snippy.TestFixtures
 
@@ -19,10 +20,12 @@ defmodule Snippy.RewireTest do
 
   test "Decoder.validate_against_castore wraps File.read error as {:castore, _}",
        %{fx: fx} do
-    {:ok, [leaf | _]} = Snippy.Decoder.decode_certs(fx.pem.a_cert)
+    quiet do
+      {:ok, [leaf | _]} = Snippy.Decoder.decode_certs(fx.pem.a_cert)
 
-    rewire Snippy.Decoder, CAStore: Snippy.TestStubs.CAStoreBadPath, as: BadDecoder do
-      assert {:error, {:castore, :enoent}} = BadDecoder.validate_against_castore(leaf)
+      rewire Snippy.Decoder, CAStore: Snippy.TestStubs.CAStoreBadPath, as: BadDecoder do
+        assert {:error, {:castore, :enoent}} = BadDecoder.validate_against_castore(leaf)
+      end
     end
   end
 

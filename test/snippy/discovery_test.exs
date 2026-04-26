@@ -7,6 +7,8 @@ defmodule Snippy.DiscoveryTest do
 
   use ExUnit.Case, async: false
 
+  import Snippy.TestUtil
+
   alias Snippy.Discovery
   alias Snippy.TestFixtures
 
@@ -196,15 +198,17 @@ defmodule Snippy.DiscoveryTest do
 
   describe "chain validation paths" do
     test "valid CA produces :ok_chain", %{fx: fx} do
-      env = %{
-        "APP_X_CRT" => fx.pem.a_cert,
-        "APP_X_KEY" => fx.pem.a_key,
-        "APP_X_CACRT" => fx.pem.ca_cert
-      }
+      quiet do
+        env = %{
+          "APP_X_CRT" => fx.pem.a_cert,
+          "APP_X_KEY" => fx.pem.a_key,
+          "APP_X_CACRT" => fx.pem.ca_cert
+        }
 
-      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
-      [g] = disc.groups
-      assert g.chain_validation == :ok_chain
+        {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+        [g] = disc.groups
+        assert g.chain_validation == :ok_chain
+      end
     end
 
     test "wrong CA but accepting :auto falls through to public-CA / self-signed", %{fx: fx} do
@@ -227,20 +231,22 @@ defmodule Snippy.DiscoveryTest do
     end
 
     test "with :never public_ca, no chain and self-signed accepted as :ok_self", %{fx: fx} do
-      env = %{
-        "APP_X_CRT" => fx.pem.a_cert,
-        "APP_X_KEY" => fx.pem.a_key
-      }
+      quiet do
+        env = %{
+          "APP_X_CRT" => fx.pem.a_cert,
+          "APP_X_KEY" => fx.pem.a_key
+        }
 
-      {:ok, disc} =
-        Snippy.discover_certificates(
-          prefix: "APP",
-          env: env,
-          public_ca_validation: :never
-        )
+        {:ok, disc} =
+          Snippy.discover_certificates(
+            prefix: "APP",
+            env: env,
+            public_ca_validation: :never
+          )
 
-      [g] = disc.groups
-      assert g.chain_validation == :ok_self
+        [g] = disc.groups
+        assert g.chain_validation == :ok_self
+      end
     end
 
     test "public_ca: :always with no matching public CA returns {:public_ca_required, _}",
@@ -277,16 +283,18 @@ defmodule Snippy.DiscoveryTest do
 
   describe "_CACRT_FILE path" do
     test "loads CA chain from a file via _CACRT_FILE", %{fx: fx} do
-      env = %{
-        "APP_X_CRT" => fx.pem.a_cert,
-        "APP_X_KEY" => fx.pem.a_key,
-        "APP_X_CACRT_FILE" => fx.paths.ca_cert
-      }
+      quiet do
+        env = %{
+          "APP_X_CRT" => fx.pem.a_cert,
+          "APP_X_KEY" => fx.pem.a_key,
+          "APP_X_CACRT_FILE" => fx.paths.ca_cert
+        }
 
-      {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
-      [g] = disc.groups
-      assert g.has_ca_chain?
-      assert g.chain_validation == :ok_chain
+        {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
+        [g] = disc.groups
+        assert g.has_ca_chain?
+        assert g.chain_validation == :ok_chain
+      end
     end
   end
 end

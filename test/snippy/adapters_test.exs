@@ -16,6 +16,9 @@ defmodule Snippy.AdaptersTest do
 
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureIO
+  import ExUnit.CaptureLog
+
   alias Snippy.Decoder
   alias Snippy.TestFixtures
 
@@ -30,8 +33,29 @@ defmodule Snippy.AdaptersTest do
       "ADP_B_KEY" => fx.pem.b_key
     }
 
-    {:ok, disc} = Snippy.discover_certificates(prefix: "ADP", env: env)
+    disc = quiet_discover(env)
     %{fx: fx, disc: disc}
+  end
+
+  defp quiet_discover(env) do
+    if System.get_env("LOUD") do
+      {:ok, d} = Snippy.discover_certificates(prefix: "ADP", env: env)
+      d
+    else
+      ref = make_ref()
+      parent = self()
+
+      capture_io(fn ->
+        capture_log(fn ->
+          {:ok, d} = Snippy.discover_certificates(prefix: "ADP", env: env)
+          send(parent, {ref, d})
+        end)
+      end)
+
+      receive do
+        {^ref, d} -> d
+      end
+    end
   end
 
   describe "Plug.Cowboy" do

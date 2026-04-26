@@ -10,6 +10,8 @@ defmodule Snippy.StoreTest do
 
   use ExUnit.Case, async: false
 
+  import Snippy.TestUtil
+
   alias Snippy.Store
   alias Snippy.TestFixtures
 
@@ -33,41 +35,47 @@ defmodule Snippy.StoreTest do
 
   describe "ensure_scanned/1" do
     test "populates :scan_meta and scan rows on first call", %{fx: fx} do
-      put_env("STA_M_CRT", fx.pem.a_cert)
-      put_env("STA_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STA_M_CRT", fx.pem.a_cert)
+        put_env("STA_M_KEY", fx.pem.a_key)
 
-      :ok = Store.ensure_scanned([])
+        :ok = Store.ensure_scanned([])
 
-      assert [{:scan_meta, %{seq: seq}}] = :ets.lookup(@table, :scan_meta)
-      assert is_integer(seq)
-      assert scan_row_count() > 0
+        assert [{:scan_meta, %{seq: seq}}] = :ets.lookup(@table, :scan_meta)
+        assert is_integer(seq)
+        assert scan_row_count() > 0
+      end
     end
 
     test "is idempotent — repeated calls don't rescan", %{fx: fx} do
-      put_env("STB_M_CRT", fx.pem.a_cert)
-      put_env("STB_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STB_M_CRT", fx.pem.a_cert)
+        put_env("STB_M_KEY", fx.pem.a_key)
 
-      :ok = Store.ensure_scanned([])
-      [{:scan_meta, meta1}] = :ets.lookup(@table, :scan_meta)
+        :ok = Store.ensure_scanned([])
+        [{:scan_meta, meta1}] = :ets.lookup(@table, :scan_meta)
 
-      :ok = Store.ensure_scanned([])
-      [{:scan_meta, meta2}] = :ets.lookup(@table, :scan_meta)
+        :ok = Store.ensure_scanned([])
+        [{:scan_meta, meta2}] = :ets.lookup(@table, :scan_meta)
 
-      assert meta1.seq == meta2.seq
-      assert meta1.scanned_at == meta2.scanned_at
+        assert meta1.seq == meta2.seq
+        assert meta1.scanned_at == meta2.scanned_at
+      end
     end
   end
 
   describe "lookup_groups/2" do
     test "returns successful materialized groups", %{fx: fx} do
-      put_env("STC_M_CRT", fx.pem.a_cert)
-      put_env("STC_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STC_M_CRT", fx.pem.a_cert)
+        put_env("STC_M_KEY", fx.pem.a_key)
 
-      groups = Store.lookup_groups(["STC"], [])
-      assert [g] = groups
-      assert g.prefix == "STC"
-      assert g.key == "M"
-      assert is_map(g.ssl_payload)
+        groups = Store.lookup_groups(["STC"], [])
+        assert [g] = groups
+        assert g.prefix == "STC"
+        assert g.key == "M"
+        assert is_map(g.ssl_payload)
+      end
     end
 
     test "drops groups whose materialization fails", %{fx: fx} do
@@ -84,21 +92,23 @@ defmodule Snippy.StoreTest do
     end
 
     test "memoizes successes — second call hits ETS, no re-decode", %{fx: fx} do
-      put_env("STE_M_CRT", fx.pem.a_cert)
-      put_env("STE_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STE_M_CRT", fx.pem.a_cert)
+        put_env("STE_M_KEY", fx.pem.a_key)
 
-      groups1 = Store.lookup_groups(["STE"], [])
-      [{_, cached1}] = :ets.lookup(@table, {:materialized, "STE", "M"})
+        groups1 = Store.lookup_groups(["STE"], [])
+        [{_, cached1}] = :ets.lookup(@table, {:materialized, "STE", "M"})
 
-      groups2 = Store.lookup_groups(["STE"], [])
-      [{_, cached2}] = :ets.lookup(@table, {:materialized, "STE", "M"})
+        groups2 = Store.lookup_groups(["STE"], [])
+        [{_, cached2}] = :ets.lookup(@table, {:materialized, "STE", "M"})
 
-      # The cached row is the *same* tuple (same struct identity is not
-      # guaranteed across processes, but the contents must be equal and the
-      # row was not rewritten). Easiest check: only one materialized row.
-      assert cached1 == cached2
-      assert length(groups1) == length(groups2)
-      assert :ets.match(@table, {{:materialized, "STE", :_}, :_}) |> length() == 1
+        # The cached row is the *same* tuple (same struct identity is not
+        # guaranteed across processes, but the contents must be equal and the
+        # row was not rewritten). Easiest check: only one materialized row.
+        assert cached1 == cached2
+        assert length(groups1) == length(groups2)
+        assert :ets.match(@table, {{:materialized, "STE", :_}, :_}) |> length() == 1
+      end
     end
 
     test "memoizes errors — only one log line per broken group", %{fx: fx} do
@@ -121,200 +131,224 @@ defmodule Snippy.StoreTest do
 
   describe "host index" do
     test "exact and wild rows are populated on materialize success", %{fx: fx} do
-      put_env("STG_A_CRT", fx.pem.a_cert)
-      put_env("STG_A_KEY", fx.pem.a_key)
-      put_env("STG_W_CRT", fx.pem.wild_cert)
-      put_env("STG_W_KEY", fx.pem.wild_key)
+      quiet do
+        put_env("STG_A_CRT", fx.pem.a_cert)
+        put_env("STG_A_KEY", fx.pem.a_key)
+        put_env("STG_W_CRT", fx.pem.wild_cert)
+        put_env("STG_W_KEY", fx.pem.wild_key)
 
-      _ = Store.lookup_groups(["STG"], [])
+        _ = Store.lookup_groups(["STG"], [])
 
-      exact = :ets.match(@table, {{:exact, "STG", :_, :"$1"}, :_})
-      wild = :ets.match(@table, {{:wild, "STG", :_, :"$1"}, :_})
+        exact = :ets.match(@table, {{:exact, "STG", :_, :"$1"}, :_})
+        wild = :ets.match(@table, {{:wild, "STG", :_, :"$1"}, :_})
 
-      flat = fn rs -> rs |> Enum.map(&hd/1) end
-      assert "a.example.com" in flat.(exact)
-      assert ["wild", "example", "com"] in flat.(wild)
+        flat = fn rs -> rs |> Enum.map(&hd/1) end
+        assert "a.example.com" in flat.(exact)
+        assert ["wild", "example", "com"] in flat.(wild)
+      end
     end
   end
 
   describe "reload/1" do
     test "increments seq, drops materialized + host index rows", %{fx: fx} do
-      put_env("STH_M_CRT", fx.pem.a_cert)
-      put_env("STH_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STH_M_CRT", fx.pem.a_cert)
+        put_env("STH_M_KEY", fx.pem.a_key)
 
-      _ = Store.lookup_groups(["STH"], [])
-      [{:scan_meta, %{seq: seq1}}] = :ets.lookup(@table, :scan_meta)
-      assert :ets.lookup(@table, {:materialized, "STH", "M"}) != []
+        _ = Store.lookup_groups(["STH"], [])
+        [{:scan_meta, %{seq: seq1}}] = :ets.lookup(@table, :scan_meta)
+        assert :ets.lookup(@table, {:materialized, "STH", "M"}) != []
 
-      :ok = Store.reload([])
+        :ok = Store.reload([])
 
-      [{:scan_meta, %{seq: seq2}}] = :ets.lookup(@table, :scan_meta)
-      assert seq2 > seq1
-      # After reload, the materialized cache should be empty (until a
-      # subsequent lookup re-materializes).
-      assert :ets.lookup(@table, {:materialized, "STH", "M"}) == []
-      assert :ets.match(@table, {{:exact, "STH", :_, :_}, :_}) == []
+        [{:scan_meta, %{seq: seq2}}] = :ets.lookup(@table, :scan_meta)
+        assert seq2 > seq1
+        # After reload, the materialized cache should be empty (until a
+        # subsequent lookup re-materializes).
+        assert :ets.lookup(@table, {:materialized, "STH", "M"}) == []
+        assert :ets.match(@table, {{:exact, "STH", :_, :_}, :_}) == []
+      end
     end
 
     test "subsequent lookup re-materializes after reload", %{fx: fx} do
-      put_env("STI_M_CRT", fx.pem.a_cert)
-      put_env("STI_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STI_M_CRT", fx.pem.a_cert)
+        put_env("STI_M_KEY", fx.pem.a_key)
 
-      [g1] = Store.lookup_groups(["STI"], [])
-      :ok = Store.reload([])
-      [g2] = Store.lookup_groups(["STI"], [])
+        [g1] = Store.lookup_groups(["STI"], [])
+        :ok = Store.reload([])
+        [g2] = Store.lookup_groups(["STI"], [])
 
-      assert g1.spki_fingerprint == g2.spki_fingerprint
+        assert g1.spki_fingerprint == g2.spki_fingerprint
+      end
     end
   end
 
   describe "discover/1" do
     test "without :env hits the shared Store path (ETS rows present after)", %{fx: fx} do
-      put_env("STJ_M_CRT", fx.pem.a_cert)
-      put_env("STJ_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STJ_M_CRT", fx.pem.a_cert)
+        put_env("STJ_M_KEY", fx.pem.a_key)
 
-      {:ok, disc} = Store.discover(prefix: "STJ")
+        {:ok, disc} = Store.discover(prefix: "STJ")
 
-      assert [g] = disc.groups
-      assert g.prefix == "STJ"
-      # Shared discover strips the payload from public groups; verify that.
-      assert g.ssl_payload == nil
-      # ETS row exists in the Store cache.
-      assert :ets.lookup(@table, {:materialized, "STJ", "M"}) != []
+        assert [g] = disc.groups
+        assert g.prefix == "STJ"
+        # Shared discover strips the payload from public groups; verify that.
+        assert g.ssl_payload == nil
+        # ETS row exists in the Store cache.
+        assert :ets.lookup(@table, {:materialized, "STJ", "M"}) != []
+      end
     end
 
     test "with :env runs isolated, leaves ETS scan rows empty", %{fx: fx} do
-      env = %{
-        "ISOLATED_M_CRT" => fx.pem.a_cert,
-        "ISOLATED_M_KEY" => fx.pem.a_key
-      }
+      quiet do
+        env = %{
+          "ISOLATED_M_CRT" => fx.pem.a_cert,
+          "ISOLATED_M_KEY" => fx.pem.a_key
+        }
 
-      {:ok, disc} = Store.discover(prefix: "ISOLATED", env: env)
+        {:ok, disc} = Store.discover(prefix: "ISOLATED", env: env)
 
-      assert [g] = disc.groups
-      assert g.prefix == "ISOLATED"
-      # Isolated path preserves the payload directly on the returned group.
-      assert is_map(g.ssl_payload)
-      # Shared scan was never touched.
-      assert :ets.lookup(@table, :scan_meta) == []
-      assert scan_row_count() == 0
+        assert [g] = disc.groups
+        assert g.prefix == "ISOLATED"
+        # Isolated path preserves the payload directly on the returned group.
+        assert is_map(g.ssl_payload)
+        # Shared scan was never touched.
+        assert :ets.lookup(@table, :scan_meta) == []
+        assert scan_row_count() == 0
+      end
     end
   end
 
   describe "scan failure handling" do
     test "scan task crash is reported as {:error, {:scan_crashed, _}}" do
-      Application.put_env(:snippy, :scan_fn, fn _opts ->
-        raise "boom"
-      end)
+      quiet do
+        Application.put_env(:snippy, :scan_fn, fn _opts ->
+          raise "boom"
+        end)
 
-      # ensure_scanned -> synchronous_scan -> raises Snippy.Store.ScanError
-      assert_raise Snippy.Store.ScanError, fn ->
-        Store.ensure_scanned([])
+        # ensure_scanned -> synchronous_scan -> raises Snippy.Store.ScanError
+        assert_raise Snippy.Store.ScanError, fn ->
+          Store.ensure_scanned([])
+        end
       end
     end
 
     test "scan task timeout is reported as {:error, :scan_timeout}" do
-      Application.put_env(:snippy, :scan_timeout_ms, 50)
+      quiet do
+        Application.put_env(:snippy, :scan_timeout_ms, 50)
 
-      Application.put_env(:snippy, :scan_fn, fn _opts ->
-        Process.sleep(2_000)
-        []
-      end)
+        Application.put_env(:snippy, :scan_fn, fn _opts ->
+          Process.sleep(2_000)
+          []
+        end)
 
-      assert_raise Snippy.Store.ScanError, fn ->
-        Store.ensure_scanned([])
+        assert_raise Snippy.Store.ScanError, fn ->
+          Store.ensure_scanned([])
+        end
       end
     end
   end
 
   describe "scheduled reload" do
     test "reload_interval_ms triggers a re-scan", %{fx: fx} do
-      put_env("STK_M_CRT", fx.pem.a_cert)
-      put_env("STK_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STK_M_CRT", fx.pem.a_cert)
+        put_env("STK_M_KEY", fx.pem.a_key)
 
-      {:ok, _disc} = Store.discover(prefix: "STK", reload_interval_ms: 50)
-      [{:scan_meta, %{seq: seq1}}] = :ets.lookup(@table, :scan_meta)
+        {:ok, _disc} = Store.discover(prefix: "STK", reload_interval_ms: 50)
+        [{:scan_meta, %{seq: seq1}}] = :ets.lookup(@table, :scan_meta)
 
-      # Wait for at least one scheduled reload to fire.
-      Process.sleep(150)
+        # Wait for at least one scheduled reload to fire.
+        Process.sleep(150)
 
-      [{:scan_meta, %{seq: seq2}}] = :ets.lookup(@table, :scan_meta)
-      assert seq2 > seq1
+        [{:scan_meta, %{seq: seq2}}] = :ets.lookup(@table, :scan_meta)
+        assert seq2 > seq1
+      end
     end
   end
 
   describe "Snippy.cowboy_opts/1 (no :env, real Store)" do
     test "produces working :sni_fun + :certs_keys for a prefix", %{fx: fx} do
-      put_env("STL_M_CRT", fx.pem.a_cert)
-      put_env("STL_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STL_M_CRT", fx.pem.a_cert)
+        put_env("STL_M_KEY", fx.pem.a_key)
 
-      opts = Snippy.cowboy_opts(prefix: "STL")
-      assert is_function(opts[:sni_fun], 1)
-      assert is_list(opts[:certs_keys])
-      assert opts[:certs_keys] != []
+        opts = Snippy.cowboy_opts(prefix: "STL")
+        assert is_function(opts[:sni_fun], 1)
+        assert is_list(opts[:certs_keys])
+        assert opts[:certs_keys] != []
+      end
     end
   end
 
   describe "scheduled reload — failure path" do
     test "scan failure during a scheduled reload is logged and the timer keeps firing",
          %{fx: fx} do
-      put_env("STM_M_CRT", fx.pem.a_cert)
-      put_env("STM_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STM_M_CRT", fx.pem.a_cert)
+        put_env("STM_M_KEY", fx.pem.a_key)
 
-      # First successful scan, schedule a reload, then make subsequent
-      # scans crash. The scheduled-reload handler must catch the failure
-      # without taking down the GenServer.
-      {:ok, _disc} = Store.discover(prefix: "STM", reload_interval_ms: 50)
-      [{:scan_meta, %{seq: seq1}}] = :ets.lookup(@table, :scan_meta)
+        # First successful scan, schedule a reload, then make subsequent
+        # scans crash. The scheduled-reload handler must catch the failure
+        # without taking down the GenServer.
+        {:ok, _disc} = Store.discover(prefix: "STM", reload_interval_ms: 50)
+        [{:scan_meta, %{seq: seq1}}] = :ets.lookup(@table, :scan_meta)
 
-      Application.put_env(:snippy, :scan_fn, fn _ -> raise "boom" end)
+        Application.put_env(:snippy, :scan_fn, fn _ -> raise "boom" end)
 
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          # Wait long enough for at least one scheduled reload to fire.
-          Process.sleep(200)
-        end)
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            # Wait long enough for at least one scheduled reload to fire.
+            Process.sleep(200)
+          end)
 
-      assert log =~ "scheduled reload failed"
+        assert log =~ "scheduled reload failed"
 
-      # The store is still alive and the scan_meta seq hasn't advanced
-      # (because every reload after the first failed).
-      assert Process.alive?(Process.whereis(Store))
-      [{:scan_meta, %{seq: seq2}}] = :ets.lookup(@table, :scan_meta)
-      assert seq2 == seq1
+        # The store is still alive and the scan_meta seq hasn't advanced
+        # (because every reload after the first failed).
+        assert Process.alive?(Process.whereis(Store))
+        [{:scan_meta, %{seq: seq2}}] = :ets.lookup(@table, :scan_meta)
+        assert seq2 == seq1
+      end
     end
   end
 
   describe "Store.reload/1 — failure path" do
     test "reload returns {:error, _} when the scan crashes, store stays up", %{fx: fx} do
-      put_env("STN_M_CRT", fx.pem.a_cert)
-      put_env("STN_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STN_M_CRT", fx.pem.a_cert)
+        put_env("STN_M_KEY", fx.pem.a_key)
 
-      # Prime with one good scan.
-      :ok = Store.ensure_scanned([])
+        # Prime with one good scan.
+        :ok = Store.ensure_scanned([])
 
-      Application.put_env(:snippy, :scan_fn, fn _ -> raise "boom" end)
+        Application.put_env(:snippy, :scan_fn, fn _ -> raise "boom" end)
 
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          assert {:error, _} = Store.reload([])
-        end)
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            assert {:error, _} = Store.reload([])
+          end)
 
-      assert log =~ "reload scan failed"
-      assert Process.alive?(Process.whereis(Store))
+        assert log =~ "reload scan failed"
+        assert Process.alive?(Process.whereis(Store))
+      end
     end
   end
 
   describe "stray task / DOWN messages" do
     test "the GenServer ignores random {ref, result} and {:DOWN, ...} messages" do
-      pid = Process.whereis(Store)
-      ref = make_ref()
-      send(pid, {ref, :ignored})
-      send(pid, {:DOWN, ref, :process, self(), :normal})
-      # If the cast above were unhandled we'd see a crash. Confirm with a
-      # synchronous round-trip that the server is still healthy.
-      assert :ok = Store.ensure_scanned([])
-      assert Process.alive?(pid)
+      quiet do
+        pid = Process.whereis(Store)
+        ref = make_ref()
+        send(pid, {ref, :ignored})
+        send(pid, {:DOWN, ref, :process, self(), :normal})
+        # If the cast above were unhandled we'd see a crash. Confirm with a
+        # synchronous round-trip that the server is still healthy.
+        assert :ok = Store.ensure_scanned([])
+        assert Process.alive?(pid)
+      end
     end
   end
 
@@ -377,13 +411,15 @@ defmodule Snippy.StoreTest do
 
   describe "materialized_group/2" do
     test "returns the cached %Group{} after a shared lookup", %{fx: fx} do
-      put_env("STO_M_CRT", fx.pem.a_cert)
-      put_env("STO_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STO_M_CRT", fx.pem.a_cert)
+        put_env("STO_M_KEY", fx.pem.a_key)
 
-      _ = Store.lookup_groups(["STO"], [])
+        _ = Store.lookup_groups(["STO"], [])
 
-      assert %Snippy.Discovery.Group{prefix: "STO", key: "M"} =
-               Store.materialized_group("STO", "M")
+        assert %Snippy.Discovery.Group{prefix: "STO", key: "M"} =
+                 Store.materialized_group("STO", "M")
+      end
     end
 
     test "returns nil for an unknown (prefix, key)" do
@@ -393,18 +429,20 @@ defmodule Snippy.StoreTest do
 
   describe "GenServer materialize fast paths" do
     test "direct materialize call hits already-cached branch", %{fx: fx} do
-      put_env("STS_M_CRT", fx.pem.a_cert)
-      put_env("STS_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STS_M_CRT", fx.pem.a_cert)
+        put_env("STS_M_KEY", fx.pem.a_key)
 
-      # First call goes through fetch_or_materialize, populating ETS.
-      [g] = Store.lookup_groups(["STS"], [])
-      assert g.key == "M"
+        # First call goes through fetch_or_materialize, populating ETS.
+        [g] = Store.lookup_groups(["STS"], [])
+        assert g.key == "M"
 
-      # Now call the GenServer directly with a raw whose materialized
-      # entry is already in ETS — exercises the [_] -> {:reply, :ok, state}
-      # branch in handle_call({:materialize, _, _}, ...).
-      raw = %Snippy.Discovery.Group{prefix: "STS", key: "M"}
-      assert :ok = GenServer.call(Snippy.Store, {:materialize, raw, []})
+        # Now call the GenServer directly with a raw whose materialized
+        # entry is already in ETS — exercises the [_] -> {:reply, :ok, state}
+        # branch in handle_call({:materialize, _, _}, ...).
+        raw = %Snippy.Discovery.Group{prefix: "STS", key: "M"}
+        assert :ok = GenServer.call(Snippy.Store, {:materialize, raw, []})
+      end
     end
 
     test "run_materialize rescue: malformed raw raises and is captured" do
@@ -428,54 +466,60 @@ defmodule Snippy.StoreTest do
 
   describe "scheduled reload — empty scan_meta path" do
     test "scheduled reload triggered without scan_meta uses [] opts", %{fx: fx} do
-      put_env("STU_M_CRT", fx.pem.a_cert)
-      put_env("STU_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STU_M_CRT", fx.pem.a_cert)
+        put_env("STU_M_KEY", fx.pem.a_key)
 
-      # Prime the Store with a successful scan and known seq.
-      :ok = Store.ensure_scanned([])
-      [{:scan_meta, %{seq: seq}}] = :ets.lookup(@table, :scan_meta)
+        # Prime the Store with a successful scan and known seq.
+        :ok = Store.ensure_scanned([])
+        [{:scan_meta, %{seq: seq}}] = :ets.lookup(@table, :scan_meta)
 
-      # Wipe scan_meta but keep the seq so scan_opts_from_state hits
-      # the `_ -> []` fallback when {:scheduled_reload, seq} is processed.
-      :ets.delete(@table, :scan_meta)
+        # Wipe scan_meta but keep the seq so scan_opts_from_state hits
+        # the `_ -> []` fallback when {:scheduled_reload, seq} is processed.
+        :ets.delete(@table, :scan_meta)
 
-      send(Process.whereis(Store), {:scheduled_reload, seq})
+        send(Process.whereis(Store), {:scheduled_reload, seq})
 
-      # Round-trip a synchronous call to wait for the message to be processed.
-      _ = Store.ensure_scanned([])
-      # If we got here without the GenServer crashing, the path was exercised.
-      assert Process.alive?(Process.whereis(Store))
+        # Round-trip a synchronous call to wait for the message to be processed.
+        _ = Store.ensure_scanned([])
+        # If we got here without the GenServer crashing, the path was exercised.
+        assert Process.alive?(Process.whereis(Store))
+      end
     end
   end
 
   describe "explicit DOWN message" do
     test "isolated DOWN message is ignored without crashing" do
-      pid = Process.whereis(Store)
-      send(pid, {:DOWN, make_ref(), :process, self(), :normal})
-      # Synchronous round-trip ensures the message was processed.
-      assert :ok = Store.ensure_scanned([])
-      assert Process.alive?(pid)
+      quiet do
+        pid = Process.whereis(Store)
+        send(pid, {:DOWN, make_ref(), :process, self(), :normal})
+        # Synchronous round-trip ensures the message was processed.
+        assert :ok = Store.ensure_scanned([])
+        assert Process.alive?(pid)
+      end
     end
   end
 
   describe "concurrent scan request" do
     test "second call to ensure_scanned during in-flight scan returns immediately", %{fx: fx} do
-      put_env("STP_M_CRT", fx.pem.a_cert)
-      put_env("STP_M_KEY", fx.pem.a_key)
+      quiet do
+        put_env("STP_M_CRT", fx.pem.a_cert)
+        put_env("STP_M_KEY", fx.pem.a_key)
 
-      # Simulate a slow scan: the first GenServer.call sees :missing and
-      # runs do_scan; while it's running we fire a parallel ensure_scanned
-      # which should also succeed (and either find scan already done or
-      # wait its turn and find it done).
-      Application.put_env(:snippy, :scan_fn, fn opts ->
-        Process.sleep(80)
-        Snippy.Discovery.scan_all(opts)
-      end)
+        # Simulate a slow scan: the first GenServer.call sees :missing and
+        # runs do_scan; while it's running we fire a parallel ensure_scanned
+        # which should also succeed (and either find scan already done or
+        # wait its turn and find it done).
+        Application.put_env(:snippy, :scan_fn, fn opts ->
+          Process.sleep(80)
+          Snippy.Discovery.scan_all(opts)
+        end)
 
-      task = Task.async(fn -> Store.ensure_scanned([]) end)
-      Process.sleep(20)
-      assert :ok = Store.ensure_scanned([])
-      assert :ok = Task.await(task, 5_000)
+        task = Task.async(fn -> Store.ensure_scanned([]) end)
+        Process.sleep(20)
+        assert :ok = Store.ensure_scanned([])
+        assert :ok = Task.await(task, 5_000)
+      end
     end
   end
 
