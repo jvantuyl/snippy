@@ -25,7 +25,17 @@ defmodule Snippy.TestStubs do
     # :ok, so the public-CA-validated success log line in
     # Snippy.Discovery.try_public_ca/4 is exercised. All other Decoder
     # functions used by Discovery delegate back to the real module.
-    def validate_against_castore(_leaf, _intermediates), do: :ok
+    @spec validate_against_castore(any(), any()) ::
+            :ok | {:error, {:castore, atom()}}
+    def validate_against_castore(_leaf, _intermediates) do
+      # The opaque `:persistent_term.get/2` call defeats the type
+      # system's narrowing of this function to `dynamic(:ok)`, so the
+      # rewired Discovery's `{:error, reason}` clause stays type-safe.
+      case :persistent_term.get({__MODULE__, :force_error}, :no) do
+        :no -> :ok
+        reason -> {:error, {:castore, reason}}
+      end
+    end
 
     defdelegate decode_certs(pem), to: Snippy.Decoder
     defdelegate decode_certs_file(path), to: Snippy.Decoder

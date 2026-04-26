@@ -759,19 +759,26 @@ defmodule Snippy.DecoderTest do
     key = Path.join(dir, "key.pem")
 
     try do
-      {_, 0} = System.cmd("openssl", ["genpkey", "-algorithm", "RSA", "-out", key])
+      {_, 0} =
+        System.cmd("openssl", ["genpkey", "-algorithm", "RSA", "-out", key],
+          stderr_to_stdout: true
+        )
 
       {_, 0} =
-        System.cmd("openssl", [
-          "pkcs8",
-          "-topk8",
-          "-in",
-          key,
-          "-passout",
-          "pass:" <> password,
-          "-out",
-          key <> ".enc"
-        ])
+        System.cmd(
+          "openssl",
+          [
+            "pkcs8",
+            "-topk8",
+            "-in",
+            key,
+            "-passout",
+            "pass:" <> password,
+            "-out",
+            key <> ".enc"
+          ],
+          stderr_to_stdout: true
+        )
 
       File.read!(key <> ".enc")
     after
