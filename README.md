@@ -6,40 +6,22 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
 Discover SSL certificates and keys from environment variables and produce
-ready-to-use configuration for `:ssl.listen/2`, Cowboy, Ranch, Bandit, or
-Thousand Island.
+ready-to-use configuration for many popular TLS endpoints (i.e.
+`:ssl.listen/2`, Cowboy, Ranch, Bandit, ThousandIsland, etc.).
 
 Snippy turns 12-factor-style env vars (`MYAPP_API_CRT`, `MYAPP_API_KEY`, ...)
 into a fully-validated, hot-reloadable cert store with built-in SNI, multi-cert
-per host (e.g. ECDSA + RSA), optional public-CA chain validation, optional
-OCSP stapling hints, and a `:sni_fun` you can hand straight to your TLS
-listener.
+per host (e.g. ECDSA + RSA), optional public-CA chain validation, optional OCSP
+stapling hints, and a `:sni_fun` you can hand straight to your TLS listener.
 
-The name and design were inspired by the TLS [Server Name Indication
-(SNI)](https://en.wikipedia.org/wiki/Server_Name_Indication) extension:
-Snippy's whole reason to exist is to make it trivial to serve the right
-certificate for the right hostname out of a single listener.
+The name was inspired by the TLS [Server Name Indication
+(SNI)](https://en.wikipedia.org/wiki/Server_Name_Indication) extension that is
+used to allow multiple certificates on a single endpoint.
 
-## Why
+## Requirements
 
-Snippy was originally written to put HTTPS on the origin side of a
-[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-*without* falling back to `noTLSVerify: true`. Cloudflare issues free
-[Origin CA](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)
-certificates that `cloudflared` can verify against the Cloudflare Origin
-Root CA via the
-[`caPool` / `originServerName`](https://developers.cloudflare.com/tunnel/advanced/origin-parameters/)
-tunnel parameters. Combine that with a Phoenix or Bandit endpoint and the
-only piece left was: how do you actually get those PEM blobs into the BEAM
-TLS listener as decoded `:certs_keys` and an `:sni_fun`, ideally hot-reloadable
-when the cert is rotated, and ideally without sprinkling `File.read!/1` calls
-through your `runtime.exs`?
-
-That's Snippy.
-
-More generally: container platforms inject secrets as files or environment
-variables, but TLS listeners want decoded DER, key records, and an `:sni_fun`
-callback. Snippy bridges that gap. You give it a prefix; it does the rest.
+- Elixir 1.19+
+- Erlang/OTP 25+ (Snippy enforces this both at compile time and at startup)
 
 ## Installation
 
@@ -69,8 +51,12 @@ to GitHub Pages:
 
 ## Quick Start
 
-Set environment variables for one or more certificates, all sharing a common
-prefix:
+Collect your certificates and keys.  Choose a global prefix you'll use to make
+them easy to find.  For each one, choose an identifying "key" that shows they
+go together.  Choose appropriate suffixes to indicate which parameter the
+variable represents.
+
+Combine all that together into some variables like this:
 
 ```sh
 export MYAPP_API_CRT_FILE=/run/secrets/api.crt.pem
@@ -81,9 +67,15 @@ export MYAPP_ADMIN_KEY_FILE=/run/secrets/admin.key.pem
 export MYAPP_ADMIN_PASSWORD_FILE=/run/secrets/admin.key.password
 ```
 
-Each helper takes the prefix directly. The shared `Snippy.Store` does the
-env scan once on first use and caches both successes and failures, so calls
-are cheap to repeat.
+Test them with this `Mix` task:
+
+```sh
+mix snippy.test --prefix MYAPP
+```
+
+If you see your keys, they're being discovered!
+
+Now use the helper for your framework of choice to configure it:
 
 ```elixir
 # Plug.Cowboy
@@ -118,8 +110,8 @@ ThousandIsland.start_link(
 {:ok, listen_socket} = :ssl.listen(4443, Snippy.ssl_opts(prefix: "MYAPP"))
 ```
 
-For Phoenix endpoints, use `phx_endpoint_config/1` directly in your runtime
-config:
+For Phoenix endpoints, you can even use `phx_endpoint_config/1` directly in
+your runtime config:
 
 ```elixir
 # config/runtime.exs
@@ -132,65 +124,10 @@ config :my_app, MyAppWeb.Endpoint,
     )
 ```
 
-The result already includes both `:certs_keys` (for clients that don't
-send SNI) and `:sni_fun` (for clients that do). Multiple certs whose
-hostnames overlap are returned together so OTP can pick the one that
-matches the client's key-exchange algorithm.
-
-## How Discovery Works
-
-Snippy is built around the principle that work should happen exactly once,
-and only when it's needed. Three lazy phases sit behind every helper call:
-
-1. **Scan** (cheap, shared). On first use, `Snippy.Store` walks the entire
-   environment and records every variable whose name ends in a recognized
-   suffix (`_CRT`, `_KEY`, `_PWD`, ...). No PEM is decoded, no files are
-   read. This scan is shared across every helper call across every prefix.
-
-2. **Filter by prefix** (per call). Each helper takes the broad scan
-   results and peels off entries whose names start with the requested
-   prefix. This costs one pass over the in-memory scan list - cheap, and
-   no rescan is required when adding new helpers or new prefixes.
-
-3. **Materialize** (lazy, per group). Only when a helper actually asks
-   about a `(prefix, key)` group does Snippy decode PEM, decrypt keys,
-   verify the cert/key match, check expiry, and build the final `:ssl`
-   payload. Successes *and* errors are memoized in ETS, so repeated
-   lookups are constant-time and broken groups don't spam the log on
-   every request.
-
-This shape gives Snippy a small DoS surface: env vars that no helper ever
-asks about never get decoded, even if an attacker can set arbitrary
-environment variables in the process.
-
-### Pre-warming and the `:discovered_certs` escape hatch
-
-Most apps don't need to think about when materialization happens - the
-first inbound TLS handshake will pay for it once and every subsequent one
-will reuse the cache. If you want to control timing explicitly (e.g. fail
-fast at boot if a cert is bad), call `Snippy.discover_certificates/1`
-during application start. It returns a `%Snippy.Discovery{}` handle whose
-`:groups` is the successfully materialized set and whose `:errors`
-contains any per-group failures:
-
-```elixir
-{:ok, disc} = Snippy.discover_certificates(prefix: "MYAPP")
-
-if disc.errors != [] do
-  raise "snippy: bad certs at boot: #{inspect(disc.errors)}"
-end
-```
-
-You can also pass the handle into any helper via `:discovered_certs` to
-make a particular call use *that* discovery's groups instead of the
-shared store:
-
-```elixir
-Snippy.cowboy_opts(prefix: "MYAPP", discovered_certs: disc)
-```
-
-This is mainly useful when running tests with a custom `:env` or when you
-want a cert set pinned to one specific scan generation.
+The produced configuration comes with both `:certs_keys` (for clients that
+don't send SNI) and `:sni_fun` (for clients that do). Multiple certs whose
+hostnames overlap are returned together so OTP can pick the one that matches
+the client's key-exchange algorithm.
 
 ## Environment-Variable Conventions
 
@@ -208,25 +145,32 @@ For `prefix: "MYAPP"`, `MYAPP_API_CRT_FILE` decomposes as:
 | --- | --- |
 | prefix | `MYAPP` |
 | key | `API` |
-| suffix | `_CRT_FILE` |
+| suffix | `CRT_FILE` |
 
 All vars sharing the same `(prefix, key)` form one *group*, which represents a
 single (cert, key, optional CA, optional password) bundle.
 
+When multiple certificates cover the same domain names, Snippy configures both
+of them.  This is how to provide certificates for two completely different key
+types (i.e. ECDSA falling back to RSA).
+
 ### Recognized Suffixes
 
-| Suffix | Purpose |
+Suffixes correspond to the options normally used to configure TLS endpoints in
+Elixir:
+
+| TLS Option | Suffix | Purpose |
 | --- | --- |
-| `_CRT` | Inline PEM-encoded certificate (or chain) |
-| `_CRT_FILE` | Path to a PEM-encoded certificate (or chain) |
-| `_KEY` | Inline PEM-encoded private key (PKCS#1, SEC1, or PKCS#8; encrypted or not) |
-| `_KEY_FILE` | Path to a PEM-encoded private key |
-| `_PWD`, `_PASS`, `_PASSWD`, `_PASSWORD` | Inline password for an encrypted key |
-| `_PWD_FILE`, `_PASS_FILE`, `_PASSWD_FILE`, `_PASSWORD_FILE` | Path to a password file |
-| `_CACRT` | Inline PEM-encoded CA chain (intermediates, root last) |
-| `_CACRT_FILE` | Path to a PEM-encoded CA chain |
-| `_OCSP_STAPLING` | Boolean flag (`true`/`false`/`on`/`off`/`1`/`0`/...) |
-| `_OSCP_STAPLING` | Common typo; honored with a warning |
+| `:cert` | `CRT` | Inline PEM-encoded certificate (or chain) |
+| `:certfile` | `CRT_FILE` | Path to a PEM-encoded certificate (or chain) |
+| `:key` | `KEY` | Inline PEM-encoded private key (PKCS#1, SEC1, or PKCS#8; encrypted or not) |
+| `:keyfile` | `KEY_FILE` | Path to a PEM-encoded private key |
+| `:password` | `PWD`, `PASS`, `PASSWD`, `PASSWORD` | Inline password for an encrypted key |
+| none | `PWD_FILE`, `PASS_FILE`, `PASSWD_FILE`, `PASSWORD_FILE` | Path to a password file |
+| `:cacerts` | `CACRT` | Inline PEM-encoded CA chain (intermediates, root last) |
+| `:cacertfile` | `CACRT_FILE` | Path to a PEM-encoded CA chain |
+| `{:stapling, _}` | `OCSP_STAPLING` | Boolean flag (`true`/`false`/`on`/`off`/`1`/`0`/...) |
+| none | `OSCP_STAPLING` | Common typo; honored with a warning |
 
 Snippy raises if more than one password alias is set on the same group, so
 you don't end up wondering which one took effect.
@@ -240,8 +184,7 @@ matching is unambiguous.
 ## Public API
 
 ```elixir
-{:ok, disc} = Snippy.discover_certificates(opts)
-{:ok, disc} = Snippy.reload(disc)
+{:ok, discovered_certs} = Snippy.reload(opts)
 
 sni_fun     = Snippy.sni(opts)
 ssl_opts    = Snippy.ssl_opts(opts)
@@ -260,7 +203,7 @@ All helpers accept the same option groups (each is optional unless noted):
 | --- | --- |
 | `:prefix` | String, atom, or list of either |
 
-### Discovery passthrough
+### Discovery Settings
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -268,7 +211,7 @@ All helpers accept the same option groups (each is optional unless noted):
 | `:env` | `System.get_env()` | Env map override (mainly for testing) |
 | `:reload_interval_ms` | `nil` | If set, the Store schedules background re-scans at this cadence |
 
-### Per-lookup
+### Lookup Settings
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -279,12 +222,6 @@ All helpers accept the same option groups (each is optional unless noted):
 | `:keys` | `nil` | List of group key strings (or atoms); only matching groups are exposed |
 
 `:only` and `:keys` are unioned: a group is included if it matches either.
-
-### Escape hatch
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `:discovered_certs` | `nil` | A `%Snippy.Discovery{}` from `discover_certificates/1`. When set, the helper uses *that* discovery and skips the shared Store entirely. |
 
 ## Validation Pipeline
 
@@ -312,10 +249,9 @@ to the live cert store. Failed groups are dropped with a logged error.
 
 ## SNI and Multi-Cert Per Host
 
-Snippy stores one row per (hostname, group) in a public ETS bag. When
-multiple groups advertise the same hostname (e.g. an ECDSA cert and an RSA
-fallback for `api.example.com`), the SNI fun returns all matching
-`certs_keys` so OTP can choose based on the client's signature algorithm.
+When multiple groups advertise the same hostname (e.g. an ECDSA cert and an RSA
+fallback for `api.example.com`), the SNI fun returns all matching `certs_keys`
+so OTP can choose based on the client's signature algorithm.
 
 Wildcard certs (leftmost-label `*` only) are matched using
 [domainname](https://hex.pm/packages/domainname) for correctness.
@@ -323,12 +259,16 @@ Wildcard certs (leftmost-label `*` only) are matched using
 ## Reloading
 
 ```elixir
-{:ok, disc} = Snippy.reload(disc)
+{:ok, discovered_certs} = Snippy.reload()
 ```
 
 `reload/1` re-scans the environment and re-reads every `_FILE` source. If no
 group in the discovery has any `_FILE` source, a warning is logged - reload
 would do nothing, since inline values come from the OS env at boot.
+
+Environmental variables are generally not changed once an application is
+loaded, so we don't check non-file variables.  If there is a compelling reason,
+this may be changed in the future.
 
 `:reload_interval_ms` schedules background reloads at the requested cadence.
 Background reload errors are logged and the previous good state is retained.
@@ -351,20 +291,56 @@ config :snippy,
   max_seconds: 15
 ```
 
-## Diagnostics
 
-```sh
-mix snippy.test --prefix MYAPP
-```
+## Why
 
-`mix snippy.test` runs the same discovery pipeline and prints what Snippy
-saw, what it accepted, and what it rejected (and why). Passwords are
-elided from output.
+It all started with a
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
+What I wanted seemed simple--HTTPS all the way to my application.  I also
+wanted to use something better than just a self-signed certificate.
 
-## Requirements
+I quickly discovered that Cloudflare issues free
+[Origin CA](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)
+certificates.  `cloudflared` can verify these certificates against their own
+Cloudflare Origin Root CA.  This seemed ideal.  Should be easy, right?
 
-- Elixir 1.19+
-- Erlang/OTP 25+ (Snippy enforces this both at compile time and at startup)
+I started by wiring everything together and immediately hit another problem.  I
+didn't want to store the secret information on disk.  I wanted it in the
+environment.  It was here I hit my first obstacle: Bandit (and thus Phoenix)
+didn't have a good way to give it key data that wasn't on disk.
+
+For the time being, I put the secrets on disk--figuring that my first goal
+(end-to-end encryption in transit) was the harder one to achieve.  Still, I
+kept that item on my to-do list.
+
+It so happens that I am serving the same site from two different domains.  Next
+I discovered that Cloudflare won't put the different domains on the same
+certificate, so I needed to create two.
+
+Then I discovered that configuring Bandit (and thus Phoenix) with both of these
+certificates was not really well documented and could possibly be done no less
+than four different ways--each of them rather tedious and fiddly.  I did
+discover how to provide information without writing files, so I had a solution
+to my to-do item.
+
+After figuring out the correct syntax to get everything to work together, I
+fired up the tunnel.  It had previously worked with HTTP, so I figured HTTPS
+would just be a simple change.  Immediately, the tunnel started giving errors
+mentioning that `localhost` didn't match the name on the certificate.
+
+Looking around, all of the advice out there was to turn off TLS-verification.
+That kind of defeats the point, so I kept digging.  I eventually prevailed by
+setting the
+[`caPool` / `originServerName`](https://developers.cloudflare.com/tunnel/advanced/origin-parameters/)
+tunnel parameters.
+
+Now it was working, but this all seemed *way* more complicated than it needed
+to be.  I have the certificates, they have the names in them.  I just want to
+find them in environmental variables and configure one of my TLS endpoints with
+them.
+
+Thus, Snippy was born.  It provides the plumbing from environmental variables
+(and possibly files) all the way to the parameters for your favorite framework.
 
 ## License
 
