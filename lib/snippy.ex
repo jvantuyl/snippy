@@ -98,10 +98,10 @@ defmodule Snippy do
       {:ok, disc} = Snippy.discover_certificates(prefix: "MYAPP")
 
       config :my_app, MyAppWeb.Endpoint,
-        https: Snippy.endpoint_https(disc, port: 4443, cipher_suite: :strong)
+        https: Snippy.phx_endpoint_config(disc, port: 4443, cipher_suite: :strong)
   """
-  @spec endpoint_https(discovery(), keyword()) :: keyword()
-  def endpoint_https(%Discovery{} = disc, opts \\ []) do
+  @spec phx_endpoint_config(discovery(), keyword()) :: keyword()
+  def phx_endpoint_config(%Discovery{} = disc, opts \\ []) do
     {scope_opts, transport_opts} = Keyword.split(opts, [:only, :keys])
     Keyword.merge(transport_opts, ssl_opts(disc, scope_opts))
   end

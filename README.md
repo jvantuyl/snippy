@@ -15,11 +15,31 @@ per host (e.g. ECDSA + RSA), optional public-CA chain validation, optional
 OCSP stapling hints, and a `:sni_fun` you can hand straight to your TLS
 listener.
 
+The name and design were inspired by the TLS [Server Name Indication
+(SNI)](https://en.wikipedia.org/wiki/Server_Name_Indication) extension:
+Snippy's whole reason to exist is to make it trivial to serve the right
+certificate for the right hostname out of a single listener.
+
 ## Why
 
-Container platforms inject secrets as files or environment variables, but TLS
-listeners want decoded DER, key records, and an `:sni_fun` callback. Snippy
-bridges that gap. You give it a prefix; it does the rest.
+Snippy was originally written to put HTTPS on the origin side of a
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+*without* falling back to `noTLSVerify: true`. Cloudflare issues free
+[Origin CA](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)
+certificates that `cloudflared` can verify against the Cloudflare Origin
+Root CA via the
+[`caPool` / `originServerName`](https://developers.cloudflare.com/tunnel/advanced/origin-parameters/)
+tunnel parameters. Combine that with a Phoenix or Bandit endpoint and the
+only piece left was: how do you actually get those PEM blobs into the BEAM
+TLS listener as decoded `:certs_keys` and an `:sni_fun`, ideally hot-reloadable
+when the cert is rotated, and ideally without sprinkling `File.read!/1` calls
+through your `runtime.exs`?
+
+That's Snippy.
+
+More generally: container platforms inject secrets as files or environment
+variables, but TLS listeners want decoded DER, key records, and an `:sni_fun`
+callback. Snippy bridges that gap. You give it a prefix; it does the rest.
 
 ## Installation
 
@@ -84,7 +104,7 @@ ThousandIsland.start_link(
 {:ok, listen_socket} = :ssl.listen(4443, Snippy.ssl_opts(disc))
 ```
 
-For Phoenix endpoints, use `endpoint_https/2` directly in your runtime
+For Phoenix endpoints, use `phx_endpoint_config/2` directly in your runtime
 config:
 
 ```elixir
@@ -92,7 +112,7 @@ config:
 {:ok, disc} = Snippy.discover_certificates(prefix: "MYAPP")
 
 config :my_app, MyAppWeb.Endpoint,
-  https: Snippy.endpoint_https(disc, port: 4443, cipher_suite: :strong)
+  https: Snippy.phx_endpoint_config(disc, port: 4443, cipher_suite: :strong)
 ```
 
 The opts already include both `:certs_keys` (for clients that don't send SNI)
@@ -157,7 +177,7 @@ cowboy_opts = Snippy.cowboy_opts(disc, opts)
 ranch_opts  = Snippy.ranch_opts(disc, opts)
 bandit_opts = Snippy.bandit_opts(disc, opts)
 ti_opts     = Snippy.thousand_island_opts(disc, opts)
-phx_opts    = Snippy.endpoint_https(disc, opts)
+phx_opts    = Snippy.phx_endpoint_config(disc, opts)
 ```
 
 ### `discover_certificates/1` Options

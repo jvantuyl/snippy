@@ -269,7 +269,7 @@ defmodule SnippyTest do
     end
   end
 
-  describe "endpoint_https/2" do
+  describe "phx_endpoint_config/2" do
     test "merges Phoenix transport opts with Snippy SSL opts", %{fx: fx} do
       env = %{
         "APP_MAIN_CRT" => fx.pem.a_cert,
@@ -279,7 +279,7 @@ defmodule SnippyTest do
       {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
 
       opts =
-        Snippy.endpoint_https(disc,
+        Snippy.phx_endpoint_config(disc,
           port: 4443,
           cipher_suite: :strong,
           otp_app: :my_app
@@ -300,7 +300,7 @@ defmodule SnippyTest do
 
       {:ok, disc} = Snippy.discover_certificates(prefix: "APP", env: env)
 
-      opts = Snippy.endpoint_https(disc, port: 4443, only: ["a.example.com"])
+      opts = Snippy.phx_endpoint_config(disc, port: 4443, only: ["a.example.com"])
 
       refute Keyword.has_key?(opts, :only)
       refute Keyword.has_key?(opts, :keys)
