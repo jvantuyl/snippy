@@ -3,12 +3,52 @@ defmodule Snippy.TestFixtures do
 
   # Drives test/support/gen_fixtures.sh to populate a temp directory with all
   # the certs and keys we need. The script is the source of truth and is
-  # documented in its own header. Each call to `setup/0` runs the script in a
-  # fresh tempdir so date-relative fixtures (expired/future) are correct.
+  # documented in its own header.
+  #
+  # The fixture set is generated **once per test run** and cached in
+  # :persistent_term; every test's `setup do` returns the same shared map.
+  # Tests are read-only consumers of the fixture files (they only read
+  # paths/PEM strings into env-var values), so a single tempdir is safe
+  # across the whole suite. Cleanup is registered as a single
+  # System.at_exit/1 hook the first time the fixtures are built.
 
   @script Path.expand("gen_fixtures.sh", __DIR__)
+  @key {__MODULE__, :fixtures}
+  @lock {__MODULE__, :lock}
 
   def setup do
+    case :persistent_term.get(@key, :missing) do
+      :missing -> build_once()
+      fx -> fx
+    end
+  end
+
+  # cleanup/1 is a no-op: the shared tempdir lives for the whole test run
+  # and is removed by the System.at_exit/1 hook registered in build_once/0.
+  def cleanup(_fx), do: :ok
+
+  defp build_once do
+    # Serialize concurrent first-time callers with a named global lock so
+    # we only run gen_fixtures.sh once even under async tests.
+    :global.set_lock({@lock, self()})
+
+    try do
+      case :persistent_term.get(@key, :missing) do
+        :missing ->
+          fx = generate()
+          :persistent_term.put(@key, fx)
+          register_cleanup(fx.dir)
+          fx
+
+        fx ->
+          fx
+      end
+    after
+      :global.del_lock({@lock, self()})
+    end
+  end
+
+  defp generate do
     dir = Path.join(System.tmp_dir!(), "snippy_fixtures_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
 
@@ -46,7 +86,7 @@ defmodule Snippy.TestFixtures do
     %{dir: dir, paths: paths, pem: pem}
   end
 
-  def cleanup(%{dir: dir}) do
-    File.rm_rf!(dir)
+  defp register_cleanup(dir) do
+    System.at_exit(fn _ -> File.rm_rf!(dir) end)
   end
 end
