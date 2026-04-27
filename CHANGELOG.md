@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.10.0
+
+### New features
+
+- **Discovery logging.** Config-building helpers (`ssl_opts/1`,
+  `cowboy_opts/1`, `bandit_opts/1`, `phx_endpoint_config/1`, etc.)
+  now emit debug-level log messages describing discovered certificate
+  groups, including hostnames, key type, validity dates, fingerprints,
+  and chain validation status. Prefix(es) are included in the
+  announcement line.
+
+- **`:log_level` option.** Pass `log_level: :info` (or any Logger
+  level) to control the level of discovery log messages. Pass
+  `log_level: false` or `log_level: :none` to suppress logging
+  entirely. The default can also be set via
+  `config :snippy, log_level: :debug`.
+
+- **Change suppression.** Repeated calls with the same certificate
+  set produce no duplicate log output. After a `Store.reload/1`,
+  logging is suppressed if the certificates are unchanged; only
+  actual changes trigger re-emission.
+
 ## 0.9.0
 
 ### Fixes

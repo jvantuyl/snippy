@@ -346,6 +346,7 @@ defmodule Snippy.Store do
     :ets.match_delete(@table, {{:exact, :_, :_, :_}, :_})
     :ets.match_delete(@table, {{:wild, :_, :_, :_}, :_})
     :ets.delete(@table, :scan_meta)
+    safe_delete(@table, :last_logged_fingerprint)
     {:reply, :ok, %{state | seq: 0, reload_interval_ms: nil, reload_timer: nil}}
   end
 
@@ -511,5 +512,11 @@ defmodule Snippy.Store do
       {:ok, %{scan_opts: opts}} -> opts
       _ -> []
     end
+  end
+
+  defp safe_delete(table, key) do
+    :ets.delete(table, key)
+  rescue
+    ArgumentError -> :ok
   end
 end

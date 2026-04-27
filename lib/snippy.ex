@@ -237,6 +237,7 @@ defmodule Snippy do
 
   @snippy_opt_keys [
     :adapter,
+    :log_level,
     :prefix,
     :case_sensitive,
     :env,
@@ -254,22 +255,26 @@ defmodule Snippy do
   end
 
   defp resolve_groups(opts) do
-    cond do
-      Keyword.has_key?(opts, :discovered_certs) ->
-        %Discovery{groups: groups} = Keyword.fetch!(opts, :discovered_certs)
-        Lookup.hydrate_groups(groups)
+    {groups, prefixes} =
+      cond do
+        Keyword.has_key?(opts, :discovered_certs) ->
+          %Discovery{groups: groups} = Keyword.fetch!(opts, :discovered_certs)
+          hydrated = Lookup.hydrate_groups(groups)
+          pfx = hydrated |> Enum.map(& &1.prefix) |> Enum.uniq()
+          {hydrated, pfx}
 
-      Keyword.has_key?(opts, :env) ->
-        # Isolated discovery: bypass the shared Store entirely. Useful in
-        # tests and any caller that wants to pin discovery to a specific
-        # env without touching shared state.
-        {:ok, %Discovery{groups: groups}} = Store.discover(opts)
-        Lookup.hydrate_groups(groups)
+        Keyword.has_key?(opts, :env) ->
+          {:ok, %Discovery{groups: groups}} = Store.discover(opts)
+          pfx = Discovery.normalize_prefixes!(opts[:prefix])
+          {Lookup.hydrate_groups(groups), pfx}
 
-      true ->
-        prefixes = Discovery.normalize_prefixes!(opts[:prefix])
-        Store.lookup_groups(prefixes, scan_and_lookup_opts(opts))
-    end
+        true ->
+          prefixes = Discovery.normalize_prefixes!(opts[:prefix])
+          {Store.lookup_groups(prefixes, scan_and_lookup_opts(opts)), prefixes}
+      end
+
+    Snippy.Logging.log_discovery(groups, prefixes, opts)
+    groups
   end
 
   defp scan_and_lookup_opts(opts) do
