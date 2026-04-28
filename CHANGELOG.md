@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.10.1
+
+### Internals
+
+- Closed the last gaps in line coverage. The four previously-uncovered
+  defensive branches (`Discovery.check_validity/3`'s `ArgumentError`
+  rescue, `Store.__test_reset__/0`'s rescue when the ETS table is gone,
+  `Store.current_scan/0`'s `:undefined` branch, and
+  `OTPCheck.check!/0`'s runtime raise) are now exercised by
+  `rewire`-driven unit tests.
+- New `Snippy.OtpInfo` helper module wraps
+  `:erlang.system_info(:otp_release)` so `OTPCheck` can be rewired
+  without monkey-patching the Erlang `:erlang` module.
+- `Snippy.Store` no longer carries a `safe_delete/2` helper; the
+  `__test_reset__` body now wraps all of its `:ets.*` calls in a single
+  `try/rescue` that treats a missing table as a successful reset (which
+  is the desired end state).
+- 236 tests + 9 properties, 100.0% line coverage.
+
 ## 0.10.0
 
 ### New features

@@ -341,12 +341,21 @@ defmodule Snippy.Store do
   @impl true
   def handle_call(:__test_reset__, _from, state) do
     if state.reload_timer, do: Process.cancel_timer(state.reload_timer)
-    :ets.match_delete(@table, {{:scan, :_, :_}, :_})
-    :ets.match_delete(@table, {{:materialized, :_, :_}, :_})
-    :ets.match_delete(@table, {{:exact, :_, :_, :_}, :_})
-    :ets.match_delete(@table, {{:wild, :_, :_, :_}, :_})
-    :ets.delete(@table, :scan_meta)
-    safe_delete(@table, :last_logged_fingerprint)
+
+    try do
+      :ets.match_delete(@table, {{:scan, :_, :_}, :_})
+      :ets.match_delete(@table, {{:materialized, :_, :_}, :_})
+      :ets.match_delete(@table, {{:exact, :_, :_, :_}, :_})
+      :ets.match_delete(@table, {{:wild, :_, :_, :_}, :_})
+      :ets.delete(@table, :scan_meta)
+      :ets.delete(@table, :last_logged_fingerprint)
+    rescue
+      # Table absent (e.g. during shutdown, or hidden by tests). The
+      # purpose of __test_reset__ is to start from a clean slate, so a
+      # missing table is already the desired end-state.
+      ArgumentError -> :ok
+    end
+
     {:reply, :ok, %{state | seq: 0, reload_interval_ms: nil, reload_timer: nil}}
   end
 
@@ -512,11 +521,5 @@ defmodule Snippy.Store do
       {:ok, %{scan_opts: opts}} -> opts
       _ -> []
     end
-  end
-
-  defp safe_delete(table, key) do
-    :ets.delete(table, key)
-  rescue
-    ArgumentError -> :ok
   end
 end
