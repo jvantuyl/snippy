@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -20,7 +21,7 @@ jobs:
     env:
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Detect ImageOS (self-hosted runner)
         run: |
@@ -33,13 +34,13 @@ jobs:
           echo "ImageOS=${IMAGE_OS}" >> "${GITHUB_ENV}"
 
       - name: Set up BEAM
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1
         with:
           version-file: .tool-versions
           version-type: strict
 
       - name: Cache build & deps
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             deps
@@ -69,7 +70,7 @@ jobs:
         run: mix coveralls.html
 
       - name: Upload coverage HTML
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-html
           path: cover/
@@ -88,7 +89,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Detect ImageOS (self-hosted runner)
         run: |
@@ -101,13 +102,13 @@ jobs:
           echo "ImageOS=${IMAGE_OS}" >> "${GITHUB_ENV}"
 
       - name: Set up BEAM
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1
         with:
           version-file: .tool-versions
           version-type: strict
 
       - name: Cache build & deps
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             deps
@@ -152,15 +153,127 @@ jobs:
           HTML
 
       - name: Configure Pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
         with:
           enablement: true
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+
+  release:
+    name: Build Release Artifacts & Publish GitHub Release
+    needs: test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: [self-hosted, linux, snippy]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Detect ImageOS (self-hosted runner)
+        run: |
+          . /etc/os-release
+          case "${ID}-${VERSION_ID}" in
+            ubuntu-22.04) IMAGE_OS=ubuntu22 ;;
+            ubuntu-24.04) IMAGE_OS=ubuntu24 ;;
+            *)            IMAGE_OS=ubuntu24 ;;
+          esac
+          echo "ImageOS=${IMAGE_OS}" >> "${GITHUB_ENV}"
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache build & deps
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-release-${{ hashFiles('.tool-versions') }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-release-${{ hashFiles('.tool-versions') }}-
+
+      - name: Install hex & rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Fetch dependencies
+        run: mix deps.get
+
+      - name: Resolve versions
+        id: versions
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          MIX_VERSION=$(grep -oE '@version "[^"]+"' mix.exs | head -1 | cut -d'"' -f2)
+          if [ "$TAG_VERSION" != "$MIX_VERSION" ]; then
+            echo "::error::tag v${TAG_VERSION} does not match mix.exs version ${MIX_VERSION}"
+            exit 1
+          fi
+          echo "version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+
+      # Builds the Hex tarball locally so it can be attached to the GitHub
+      # Release as a downloadable artifact. We deliberately do NOT run
+      # `mix hex.publish` — Snippy is not (yet) published to hex.pm, and
+      # this workflow has no HEX_API_KEY for that reason.
+      - name: Build Hex package tarball
+        run: mix hex.build
+
+      - name: Compress Hex tarball (gzip, bzip2, xz)
+        run: |
+          set -euo pipefail
+          tar="snippy-${{ steps.versions.outputs.version }}.tar"
+          gzip  -9 -k "$tar"
+          bzip2 -9 -k "$tar"
+          xz    -9 -k "$tar"
+          ls -la "$tar"*
+
+      - name: Generate documentation
+        env:
+          MIX_ENV: dev
+        run: mix docs
+
+      - name: Pack documentation tarball
+        run: |
+          set -euo pipefail
+          tar -cf "snippy-${{ steps.versions.outputs.version }}-docs.tar" -C doc .
+          gzip  -9 -k "snippy-${{ steps.versions.outputs.version }}-docs.tar"
+          bzip2 -9 -k "snippy-${{ steps.versions.outputs.version }}-docs.tar"
+          xz    -9 -k "snippy-${{ steps.versions.outputs.version }}-docs.tar"
+          rm    "snippy-${{ steps.versions.outputs.version }}-docs.tar"
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          set -euo pipefail
+          awk -v tag="${{ steps.versions.outputs.version }}" '
+            /^## / {
+              if (found) exit
+              if ($2 == tag) { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "::error::no CHANGELOG.md section found for version ${{ steps.versions.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        with:
+          name: v${{ steps.versions.outputs.version }}
+          body_path: release_notes.md
+          files: |
+            snippy-${{ steps.versions.outputs.version }}.tar
+            snippy-${{ steps.versions.outputs.version }}-docs.tar.gz
+          fail_on_unmatched_files: true
