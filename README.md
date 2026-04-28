@@ -21,7 +21,7 @@ used to allow multiple certificates on a single endpoint.
 ## Requirements
 
 - Elixir 1.19+
-- Erlang/OTP 25+ (Snippy enforces this both at compile time and at startup)
+- Erlang/OTP 25+
 
 ## Installation
 
@@ -160,7 +160,7 @@ Suffixes correspond to the options normally used to configure TLS endpoints in
 Elixir:
 
 | TLS Option | Suffix | Purpose |
-| --- | --- |
+| --- | --- | --- |
 | `:cert` | `CRT`, `CERT` | Inline PEM-encoded certificate (or chain) |
 | `:certfile` | `CRT_FILE`, `CERT_FILE` | Path to a PEM-encoded certificate (or chain) |
 | `:key` | `KEY` | Inline PEM-encoded private key (PKCS#1, SEC1, or PKCS#8; encrypted or not) |
